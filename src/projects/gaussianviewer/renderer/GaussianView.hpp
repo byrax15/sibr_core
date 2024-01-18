@@ -3,7 +3,7 @@
  * GRAPHDECO research group, https://team.inria.fr/graphdeco
  * All rights reserved.
  *
- * This software is free for non-commercial, research and evaluation use 
+ * This software is free for non-commercial, research and evaluation use
  * under the terms of the LICENSE.md file.
  *
  * For inquiries contact sibr@inria.fr and/or George.Drettakis@inria.fr
@@ -31,7 +31,7 @@ namespace CudaRasterizer
 	class Rasterizer;
 }
 
-namespace sibr { 
+namespace sibr {
 
 	class BufferCopyRenderer;
 	class BufferCopyRenderer2;
@@ -56,7 +56,7 @@ namespace sibr {
 
 		/** Replace the current scene.
 		 *\param newScene the new scene to render */
-		void setScene(const sibr::BasicIBRScene::Ptr & newScene);
+		void setScene(const sibr::BasicIBRScene::Ptr& newScene);
 
 		/**
 		 * Perform rendering. Called by the view manager or rendering mode.
@@ -77,7 +77,7 @@ namespace sibr {
 		void onGUI() override;
 
 		/** \return a reference to the scene */
-		const std::shared_ptr<sibr::BasicIBRScene> & getScene() const { return _scene; }
+		const std::shared_ptr<sibr::BasicIBRScene>& getScene() const { return _scene; }
 
 		virtual ~GaussianView() override;
 
@@ -87,8 +87,8 @@ namespace sibr {
 
 		std::string currMode = "Splats";
 
-		bool _cropping = false;
-		sibr::Vector3f _boxmin, _boxmax, _scenemin, _scenemax;
+		bool _cropping = true;
+		Vector3f _scenemin, _scenemax;
 		char _buff[512] = "cropped.ply";
 
 		bool _fastCulling = true;
@@ -102,6 +102,10 @@ namespace sibr {
 		float* opacity_cuda;
 		float* shs_cuda;
 		int* rect_cuda;
+
+		float* boxmin_cuda, * boxmax_cuda;
+		int selected_box = 0;
+		std::vector<Vector3f> boxmin, boxmax;
 
 		GLuint imageBuffer;
 		cudaGraphicsResource_t imageBufferCuda;
@@ -130,4 +134,4 @@ namespace sibr {
 		GaussianSurfaceRenderer* _gaussianRenderer;
 	};
 
-} /*namespace sibr*/ 
+} /*namespace sibr*/

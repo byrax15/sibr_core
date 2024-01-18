@@ -3,26 +3,26 @@
  * GRAPHDECO research group, https://team.inria.fr/graphdeco
  * All rights reserved.
  *
- * This software is free for non-commercial, research and evaluation use 
+ * This software is free for non-commercial, research and evaluation use
  * under the terms of the LICENSE.md file.
  *
  * For inquiries contact sibr@inria.fr and/or George.Drettakis@inria.fr
  */
 
 #include <projects/gaussianviewer/renderer/GaussianView.hpp>
-#include <core/graphics/GUI.hpp>
-#include <thread>
 #include <boost/asio.hpp>
-#include <rasterizer.h>
+#include <core/graphics/GUI.hpp>
 #include <imgui_internal.h>
+#include <rasterizer.h>
+#include <thread>
 
-// Define the types and sizes that make up the contents of each Gaussian 
-// in the trained model.
+ // Define the types and sizes that make up the contents of each Gaussian 
+ // in the trained model.
 typedef sibr::Vector3f Pos;
 template<int D>
 struct SHs
 {
-	float shs[(D+1)*(D+1)*3];
+	float shs[(D + 1) * (D + 1) * 3];
 };
 struct Scale
 {
@@ -140,7 +140,7 @@ int loadPly(const char* filename,
 	}
 	auto sorter = [](const std::pair < uint64_t, int>& a, const std::pair < uint64_t, int>& b) {
 		return a.first < b.first;
-	};
+		};
 	std::sort(mapp.begin(), mapp.end(), sorter);
 
 	// Move data from AoS to SoA
@@ -159,7 +159,7 @@ int loadPly(const char* filename,
 			rot[k].rot[j] = points[i].rot.rot[j] / length;
 
 		// Exponentiate scale
-		for(int j = 0; j < 3; j++)
+		for (int j = 0; j < 3; j++)
 			scales[k].scale[j] = exp(points[i].scale.scale[j]);
 
 		// Activate alpha
@@ -205,7 +205,7 @@ void savePly(const char* filename,
 
 	outfile << "ply\nformat binary_little_endian 1.0\nelement vertex " << count << "\n";
 
-	std::string props1[] = { "x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2"};
+	std::string props1[] = { "x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2" };
 	std::string props2[] = { "opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3" };
 
 	for (auto s : props1)
@@ -294,7 +294,7 @@ namespace sibr
 
 	private:
 
-		GLShader			_shader; 
+		GLShader			_shader;
 		GLuniform<bool>		_flip = false; ///< Flip the texture when copying.
 		GLuniform<int>		_width = 1000;
 		GLuniform<int>		_height = 800;
@@ -311,11 +311,11 @@ std::function<char* (size_t N)> resizeFunctional(void** ptr, size_t& S) {
 			S = 2 * N;
 		}
 		return reinterpret_cast<char*>(*ptr);
-	};
+		};
 	return lambda;
 }
 
-sibr::GaussianView::GaussianView(const sibr::BasicIBRScene::Ptr & ibrScene, uint render_w, uint render_h, const char* file, bool* messageRead, int sh_degree, bool white_bg, bool useInterop, int device) :
+sibr::GaussianView::GaussianView(const sibr::BasicIBRScene::Ptr& ibrScene, uint render_w, uint render_h, const char* file, bool* messageRead, int sh_degree, bool white_bg, bool useInterop, int device) :
 	_scene(ibrScene),
 	_dontshow(messageRead),
 	_sh_degree(sh_degree),
@@ -346,9 +346,9 @@ sibr::GaussianView::GaussianView(const sibr::BasicIBRScene::Ptr & ibrScene, uint
 	_copyRenderer->height() = render_h;
 
 	std::vector<uint> imgs_ulr;
-	const auto & cams = ibrScene->cameras()->inputCameras();
-	for(size_t cid = 0; cid < cams.size(); ++cid) {
-		if(cams[cid]->isActive()) {
+	const auto& cams = ibrScene->cameras()->inputCameras();
+	for (size_t cid = 0; cid < cams.size(); ++cid) {
+		if (cams[cid]->isActive()) {
 			imgs_ulr.push_back(uint(cid));
 		}
 	}
@@ -373,8 +373,6 @@ sibr::GaussianView::GaussianView(const sibr::BasicIBRScene::Ptr & ibrScene, uint
 		count = loadPly<3>(file, pos, shs, opacity, scale, rot, _scenemin, _scenemax);
 	}
 
-	_boxmin = _scenemin;
-	_boxmax = _scenemax;
 
 	int P = count;
 
@@ -390,6 +388,14 @@ sibr::GaussianView::GaussianView(const sibr::BasicIBRScene::Ptr & ibrScene, uint
 	CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&scale_cuda, sizeof(Scale) * P));
 	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(scale_cuda, scale.data(), sizeof(Scale) * P, cudaMemcpyHostToDevice));
 
+
+	boxmin = { _scenemin };
+	boxmax = { _scenemax };
+	CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&boxmin_cuda, sizeof(float3) * 16));
+	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(boxmin_cuda, boxmin.data(), sizeof(float3) * 16, cudaMemcpyHostToDevice));
+	CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&boxmax_cuda, sizeof(float3) * 16));
+	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(boxmax_cuda, boxmax.data(), sizeof(float3) * 16, cudaMemcpyHostToDevice));
+
 	// Create space for view parameters
 	CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&view_cuda, sizeof(sibr::Matrix4f)));
 	CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&proj_cuda, sizeof(sibr::Matrix4f)));
@@ -400,7 +406,7 @@ sibr::GaussianView::GaussianView(const sibr::BasicIBRScene::Ptr & ibrScene, uint
 	float bg[3] = { white_bg ? 1.f : 0.f, white_bg ? 1.f : 0.f, white_bg ? 1.f : 0.f };
 	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(background_cuda, bg, 3 * sizeof(float), cudaMemcpyHostToDevice));
 
-	gData = new GaussianData(P, 
+	gData = new GaussianData(P,
 		(float*)pos.data(),
 		(float*)rot.data(),
 		(float*)scale.data(),
@@ -434,13 +440,13 @@ sibr::GaussianView::GaussianView(const sibr::BasicIBRScene::Ptr & ibrScene, uint
 	imgBufferFunc = resizeFunctional(&imgPtr, allocdImg);
 }
 
-void sibr::GaussianView::setScene(const sibr::BasicIBRScene::Ptr & newScene)
+void sibr::GaussianView::setScene(const sibr::BasicIBRScene::Ptr& newScene)
 {
 	_scene = newScene;
 
 	// Tell the scene we are a priori using all active cameras.
 	std::vector<uint> imgs_ulr;
-	const auto & cams = newScene->cameras()->inputCameras();
+	const auto& cams = newScene->cameras()->inputCameras();
 	for (size_t cid = 0; cid < cams.size(); ++cid) {
 		if (cams[cid]->isActive()) {
 			imgs_ulr.push_back(uint(cid));
@@ -449,7 +455,7 @@ void sibr::GaussianView::setScene(const sibr::BasicIBRScene::Ptr & newScene)
 	_scene->cameras()->debugFlagCameraAsUsed(imgs_ulr);
 }
 
-void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget & dst, const sibr::Camera & eye)
+void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camera& eye)
 {
 	if (currMode == "Ellipsoids")
 	{
@@ -492,8 +498,8 @@ void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget & dst, const sibr::Came
 
 		// Rasterize
 		int* rects = _fastCulling ? rect_cuda : nullptr;
-		float* boxmin = _cropping ? (float*)&_boxmin : nullptr;
-		float* boxmax = _cropping ? (float*)&_boxmax : nullptr;
+		//float* boxmin = _cropping ? &_boxmin.data()->x() : nullptr;
+		//float* boxmax = _cropping ? &_boxmax.data()->x() : nullptr;
 		CudaRasterizer::Rasterizer::forward(
 			geomBufferFunc,
 			binningBufferFunc,
@@ -518,8 +524,9 @@ void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget & dst, const sibr::Came
 			image_cuda,
 			nullptr,
 			rects,
-			boxmin,
-			boxmax
+			boxmin.size(),
+			boxmin_cuda,
+			boxmax_cuda
 		);
 
 		if (!_interop_failed)
@@ -542,7 +549,7 @@ void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget & dst, const sibr::Came
 	}
 }
 
-void sibr::GaussianView::onUpdate(Input & input)
+void sibr::GaussianView::onUpdate(Input& input)
 {
 }
 
@@ -550,7 +557,7 @@ void sibr::GaussianView::onGUI()
 {
 	// Generate and update UI elements
 	const std::string guiName = "3D Gaussians";
-	if (ImGui::Begin(guiName.c_str())) 
+	if (ImGui::Begin(guiName.c_str()))
 	{
 		if (ImGui::BeginCombo("Render Mode", currMode.c_str()))
 		{
@@ -572,32 +579,65 @@ void sibr::GaussianView::onGUI()
 	ImGui::Checkbox("Crop Box", &_cropping);
 	if (_cropping)
 	{
-		ImGui::SliderFloat("Box Min X", &_boxmin.x(), _scenemin.x(), _scenemax.x());
-		ImGui::SliderFloat("Box Min Y", &_boxmin.y(), _scenemin.y(), _scenemax.y());
-		ImGui::SliderFloat("Box Min Z", &_boxmin.z(), _scenemin.z(), _scenemax.z());
-		ImGui::SliderFloat("Box Max X", &_boxmax.x(), _scenemin.x(), _scenemax.x());
-		ImGui::SliderFloat("Box Max Y", &_boxmax.y(), _scenemin.y(), _scenemax.y());
-		ImGui::SliderFloat("Box Max Z", &_boxmax.z(), _scenemin.z(), _scenemax.z());
-		ImGui::InputText("File", _buff, 512);
-		if (ImGui::Button("Save"))
+		const std::string selected_text = std::to_string(selected_box);
+		if (ImGui::BeginCombo("Select Crop Box", selected_text.c_str()))
 		{
-			std::vector<Pos> pos(count);
-			std::vector<Rot> rot(count);
-			std::vector<float> opacity(count);
-			std::vector<SHs<3>> shs(count);
-			std::vector<Scale> scale(count);
-			CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(pos.data(), pos_cuda, sizeof(Pos) * count, cudaMemcpyDeviceToHost));
-			CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(rot.data(), rot_cuda, sizeof(Rot) * count, cudaMemcpyDeviceToHost));
-			CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(opacity.data(), opacity_cuda, sizeof(float) * count, cudaMemcpyDeviceToHost));
-			CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(shs.data(), shs_cuda, sizeof(SHs<3>) * count, cudaMemcpyDeviceToHost));
-			CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(scale.data(), scale_cuda, sizeof(Scale) * count, cudaMemcpyDeviceToHost));
-			savePly(_buff, pos, shs, opacity, scale, rot, _boxmin, _boxmax);
+			assert(boxmin.size() == boxmax.size());
+			for (int i = 0; i < boxmin.size(); ++i) {
+				const auto label = std::to_string(i);
+				if (ImGui::Selectable(label.c_str(), selected_box == i)) {
+					selected_box = i;
+				}
+			}
+			ImGui::EndCombo();
 		}
+
+		if (ImGui::Button("Add Box") && boxmin.size() < 16) {
+			boxmin.emplace_back(_scenemin);
+			boxmax.emplace_back(_scenemax);
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Remove Box") && boxmin.size() > 1) {
+			boxmin.pop_back();
+			boxmax.pop_back();
+			selected_box = std::max(selected_box - 1, 0);
+			ImGui::BeginCombo("Select Crop Box", selected_text.c_str());
+		}
+		ImGui::SameLine();
+		ImGui::Text("Active Boxes: %i/16", boxmin.size());
+
+		const auto slid
+			= ImGui::SliderFloat("Box Min X", &boxmin[selected_box].x(), _scenemin.x(), _scenemax.x())
+			| ImGui::SliderFloat("Box Min Y", &boxmin[selected_box].y(), _scenemin.y(), _scenemax.y())
+			| ImGui::SliderFloat("Box Min Z", &boxmin[selected_box].z(), _scenemin.z(), _scenemax.z())
+			| ImGui::SliderFloat("Box Max X", &boxmax[selected_box].x(), _scenemin.x(), _scenemax.x())
+			| ImGui::SliderFloat("Box Max Y", &boxmax[selected_box].y(), _scenemin.y(), _scenemax.y())
+			| ImGui::SliderFloat("Box Max Z", &boxmax[selected_box].z(), _scenemin.z(), _scenemax.z());
+		if (slid) {
+			CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(boxmin_cuda, boxmin.data()->data(), sizeof(float3) * boxmin.size(), cudaMemcpyHostToDevice));
+			CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(boxmax_cuda, boxmax.data()->data(), sizeof(float3) * boxmax.size(), cudaMemcpyHostToDevice));
+		}
+
+		//ImGui::InputText("File", _buff, 512);
+		//if (ImGui::Button("Save"))
+		//{
+		//	std::vector<Pos> pos(count);
+		//	std::vector<Rot> rot(count);
+		//	std::vector<float> opacity(count);
+		//	std::vector<SHs<3>> shs(count);
+		//	std::vector<Scale> scale(count);
+		//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(pos.data(), pos_cuda, sizeof(Pos) * count, cudaMemcpyDeviceToHost));
+		//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(rot.data(), rot_cuda, sizeof(Rot) * count, cudaMemcpyDeviceToHost));
+		//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(opacity.data(), opacity_cuda, sizeof(float) * count, cudaMemcpyDeviceToHost));
+		//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(shs.data(), shs_cuda, sizeof(SHs<3>) * count, cudaMemcpyDeviceToHost));
+		//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(scale.data(), scale_cuda, sizeof(Scale) * count, cudaMemcpyDeviceToHost));
+		//	savePly(_buff, pos, shs, opacity, scale, rot, _boxmin, _boxmax);
+		//}
 	}
 
 	ImGui::End();
 
-	if(!*_dontshow && !accepted && _interop_failed)
+	if (!*_dontshow && !accepted && _interop_failed)
 		ImGui::OpenPopup("Error Using Interop");
 
 	if (!*_dontshow && !accepted && _interop_failed && ImGui::BeginPopupModal("Error Using Interop", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {

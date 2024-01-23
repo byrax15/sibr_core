@@ -15,6 +15,7 @@
 #include <imgui_internal.h>
 #include <rasterizer.h>
 #include <thread>
+#include "ImGuizmo.h"
 
  // Define the types and sizes that make up the contents of each Gaussian 
  // in the trained model.
@@ -403,8 +404,9 @@ sibr::GaussianView::GaussianView(const sibr::BasicIBRScene::Ptr& ibrScene, uint 
 	CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&background_cuda, 3 * sizeof(float)));
 	CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&rect_cuda, 2 * P * sizeof(int)));
 
-	float bg[3] = { white_bg ? 1.f : 0.f, white_bg ? 1.f : 0.f, white_bg ? 1.f : 0.f };
-	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(background_cuda, bg, 3 * sizeof(float), cudaMemcpyHostToDevice));
+	const auto color = white_bg ? 1.f : 0.f;
+	Vector3f bg(color, color, color);
+	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(background_cuda, bg.data(), sizeof(Vector3f), cudaMemcpyHostToDevice));
 
 	gData = new GaussianData(P,
 		(float*)pos.data(),
@@ -455,8 +457,11 @@ void sibr::GaussianView::setScene(const sibr::BasicIBRScene::Ptr& newScene)
 	_scene->cameras()->debugFlagCameraAsUsed(imgs_ulr);
 }
 
+
+sibr::Camera const* last_cam;
 void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camera& eye)
 {
+	last_cam = &eye;
 	if (currMode == "Ellipsoids")
 	{
 		_gaussianRenderer->process(count, *gData, eye, dst, 0.2f);
@@ -469,9 +474,10 @@ void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camer
 	{
 		// Convert view and projection to target coordinate system
 		auto view_mat = eye.view();
-		auto proj_mat = eye.viewproj();
 		view_mat.row(1) *= -1;
 		view_mat.row(2) *= -1;
+
+		auto proj_mat = eye.viewproj();
 		proj_mat.row(1) *= -1;
 
 		// Compute additional view parameters
@@ -617,7 +623,24 @@ void sibr::GaussianView::onGUI()
 			CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(boxmin_cuda, boxmin.data()->data(), sizeof(float3) * boxmin.size(), cudaMemcpyHostToDevice));
 			CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(boxmax_cuda, boxmax.data()->data(), sizeof(float3) * boxmax.size(), cudaMemcpyHostToDevice));
 		}
+		{
+			using namespace ImGui;
+			Begin("Point view");
+			ImGuizmo::SetDrawlist();
+			ImGuizmo::SetRect(GetWindowPos().x, GetWindowPos().y, GetWindowWidth(), GetWindowHeight());
 
+			using Mat = Matrix4f;
+			//CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(view.data(), view_cuda, sizeof(Mat), cudaMemcpyDeviceToHost));
+			//CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(proj.data(), proj_cuda, sizeof(Mat), cudaMemcpyDeviceToHost));
+			Mat mat, identity = Mat::Identity();
+			Vector3f transl = Vector3f::Zero(), rot = Vector3f::Zero(), scale = { 1,1,1 };
+			ImGuizmo::RecomposeMatrixFromComponents(transl.data(), rot.data(), scale.data(), mat.data());
+			
+			const auto view = last_cam->view();
+			const auto proj = last_cam->proj();
+			ImGuizmo::DrawCubes(view.data(), proj.data(), mat.data(), 1);
+			End();
+		}
 		//ImGui::InputText("File", _buff, 512);
 		//if (ImGui::Button("Save"))
 		//{

@@ -106,6 +106,7 @@ namespace sibr {
 		float* boxmin_cuda, * boxmax_cuda;
 		int selected_box = 0;
 		std::vector<Vector3f> boxmin, boxmax;
+		int selected_operation = 0;
 
 		GLuint imageBuffer;
 		cudaGraphicsResource_t imageBufferCuda;

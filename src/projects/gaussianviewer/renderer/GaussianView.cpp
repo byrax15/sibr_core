@@ -506,7 +506,7 @@ void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camer
 		int* rects = _fastCulling ? rect_cuda : nullptr;
 		//float* boxmin = _cropping ? &_boxmin.data()->x() : nullptr;
 		//float* boxmax = _cropping ? &_boxmax.data()->x() : nullptr;
-		CudaRasterizer::Rasterizer::forward(
+		const auto num_rendered = CudaRasterizer::Rasterizer::forward(
 			geomBufferFunc,
 			binningBufferFunc,
 			imgBufferFunc,
@@ -532,7 +532,8 @@ void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camer
 			rects,
 			boxmin.size(),
 			boxmin_cuda,
-			boxmax_cuda
+			boxmax_cuda,
+			static_cast<FORWARD::Cull::Operator>(selected_operation)
 		);
 
 		if (!_interop_failed)
@@ -545,8 +546,20 @@ void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camer
 			CUDA_SAFE_CALL(cudaMemcpy(fallback_bytes.data(), fallbackBufferCuda, fallback_bytes.size(), cudaMemcpyDeviceToHost));
 			glNamedBufferSubData(imageBuffer, 0, fallback_bytes.size(), fallback_bytes.data());
 		}
-		// Copy image contents to framebuffer
-		_copyRenderer->process(imageBuffer, dst, _resolution.x(), _resolution.y());
+
+		/*
+		* NECESSARY because the forward(...) returns without drawing if all gaussians were culled,
+		* leaving a smear of gaussians in the framebuffer which lasted until at least one gaussian
+		* remains after culling.
+		*/
+		if (num_rendered <= 0) {
+			dst.clear();
+			return;
+		}
+		else {
+			// Copy image contents to framebuffer
+			_copyRenderer->process(imageBuffer, dst, _resolution.x(), _resolution.y());
+		}
 	}
 
 	if (cudaPeekAtLastError() != cudaSuccess)
@@ -598,6 +611,17 @@ void sibr::GaussianView::onGUI()
 			ImGui::EndCombo();
 		}
 
+		using FORWARD::Cull::Names;
+		if (ImGui::BeginCombo("Box Combination Op.", Names[selected_operation]))
+		{
+			for (int i = 0; i < Names.size(); ++i) {
+				if (ImGui::Selectable(Names[i], selected_operation == i)) {
+					selected_operation = i;
+				}
+			}
+			ImGui::EndCombo();
+		}
+
 		if (ImGui::Button("Add Box") && boxmin.size() < 16) {
 			boxmin.emplace_back(_scenemin);
 			boxmax.emplace_back(_scenemax);
@@ -609,6 +633,7 @@ void sibr::GaussianView::onGUI()
 			selected_box = std::max(selected_box - 1, 0);
 			ImGui::BeginCombo("Select Crop Box", selected_text.c_str());
 		}
+
 		ImGui::SameLine();
 		ImGui::Text("Active Boxes: %i/16", boxmin.size());
 
@@ -630,15 +655,14 @@ void sibr::GaussianView::onGUI()
 			ImGuizmo::SetRect(GetWindowPos().x, GetWindowPos().y, GetWindowWidth(), GetWindowHeight());
 
 			using Mat = Matrix4f;
-			Mat mat;
-			Vector3f transl = (boxmin[0] + boxmax[0]) / 2.f, rot = Vector3f::Zero(), scale = boxmax[0] - boxmin[0];
-			ImGuizmo::RecomposeMatrixFromComponents(transl.data(), rot.data(), scale.data(), mat.data());
-
-			const auto view = last_cam->view();
-			const auto proj = last_cam->proj();
+			std::vector<Mat> box_mats(boxmin.size());
+			for (auto i = 0; i < boxmin.size(); ++i) {
+				Vector3f transl = (boxmin[i] + boxmax[i]) / 2.f, rot = Vector3f::Zero(), scale = boxmax[i] - boxmin[i];
+				ImGuizmo::RecomposeMatrixFromComponents(transl.data(), rot.data(), scale.data(), box_mats[i].data());
+			}
 
 			using namespace ImGuizmo::Modes;
-			ImGuizmo::DrawCubes<Poly::LINE, Color::PER_NORMAL>(view.data(), proj.data(), mat.data(), 1);
+			ImGuizmo::DrawCubes<Poly::LINE, Color::PER_NORMAL>(last_cam->view().data(), last_cam->proj().data(), box_mats[0].data(), box_mats.size());
 			End();
 		}
 		//ImGui::InputText("File", _buff, 512);

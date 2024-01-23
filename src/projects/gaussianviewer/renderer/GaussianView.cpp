@@ -630,15 +630,15 @@ void sibr::GaussianView::onGUI()
 			ImGuizmo::SetRect(GetWindowPos().x, GetWindowPos().y, GetWindowWidth(), GetWindowHeight());
 
 			using Mat = Matrix4f;
-			//CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(view.data(), view_cuda, sizeof(Mat), cudaMemcpyDeviceToHost));
-			//CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(proj.data(), proj_cuda, sizeof(Mat), cudaMemcpyDeviceToHost));
-			Mat mat, identity = Mat::Identity();
-			Vector3f transl = Vector3f::Zero(), rot = Vector3f::Zero(), scale = { 1,1,1 };
+			Mat mat;
+			Vector3f transl = (boxmin[0] + boxmax[0]) / 2.f, rot = Vector3f::Zero(), scale = boxmax[0] - boxmin[0];
 			ImGuizmo::RecomposeMatrixFromComponents(transl.data(), rot.data(), scale.data(), mat.data());
-			
+
 			const auto view = last_cam->view();
 			const auto proj = last_cam->proj();
-			ImGuizmo::DrawCubes(view.data(), proj.data(), mat.data(), 1);
+
+			using namespace ImGuizmo::Modes;
+			ImGuizmo::DrawCubes<Poly::LINE, Color::PER_NORMAL>(view.data(), proj.data(), mat.data(), 1);
 			End();
 		}
 		//ImGui::InputText("File", _buff, 512);

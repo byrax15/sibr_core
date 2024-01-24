@@ -502,10 +502,6 @@ void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camer
 			image_cuda = fallbackBufferCuda;
 		}
 
-		// Rasterize
-		int* rects = _fastCulling ? rect_cuda : nullptr;
-		//float* boxmin = _cropping ? &_boxmin.data()->x() : nullptr;
-		//float* boxmax = _cropping ? &_boxmax.data()->x() : nullptr;
 		const auto num_rendered = CudaRasterizer::Rasterizer::forward(
 			geomBufferFunc,
 			binningBufferFunc,
@@ -529,7 +525,7 @@ void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camer
 			false,
 			image_cuda,
 			nullptr,
-			rects,
+			_fastCulling ? rect_cuda : nullptr,
 			boxmin.size(),
 			boxmin_cuda,
 			boxmax_cuda,
@@ -595,93 +591,108 @@ void sibr::GaussianView::onGUI()
 	}
 	ImGui::Checkbox("Fast culling", &_fastCulling);
 
-	ImGui::Checkbox("Crop Box", &_cropping);
-	if (_cropping)
+	const std::string selected_text = std::to_string(selected_box);
+	if (ImGui::BeginCombo("Select Crop Box", selected_text.c_str()))
 	{
-		const std::string selected_text = std::to_string(selected_box);
-		if (ImGui::BeginCombo("Select Crop Box", selected_text.c_str()))
-		{
-			assert(boxmin.size() == boxmax.size());
-			for (int i = 0; i < boxmin.size(); ++i) {
-				const auto label = std::to_string(i);
-				if (ImGui::Selectable(label.c_str(), selected_box == i)) {
-					selected_box = i;
-				}
+		assert(boxmin.size() == boxmax.size());
+		for (int i = 0; i < boxmin.size(); ++i) {
+			const auto label = std::to_string(i);
+			if (ImGui::Selectable(label.c_str(), selected_box == i)) {
+				selected_box = i;
 			}
-			ImGui::EndCombo();
 		}
-
-		using FORWARD::Cull::Names;
-		if (ImGui::BeginCombo("Box Combination Op.", Names[selected_operation]))
-		{
-			for (int i = 0; i < Names.size(); ++i) {
-				if (ImGui::Selectable(Names[i], selected_operation == i)) {
-					selected_operation = i;
-				}
-			}
-			ImGui::EndCombo();
-		}
-
-		if (ImGui::Button("Add Box") && boxmin.size() < 16) {
-			boxmin.emplace_back(_scenemin);
-			boxmax.emplace_back(_scenemax);
-		}
-		ImGui::SameLine();
-		if (ImGui::Button("Remove Box") && boxmin.size() > 1) {
-			boxmin.pop_back();
-			boxmax.pop_back();
-			selected_box = std::max(selected_box - 1, 0);
-			ImGui::BeginCombo("Select Crop Box", selected_text.c_str());
-		}
-
-		ImGui::SameLine();
-		ImGui::Text("Active Boxes: %i/16", boxmin.size());
-
-		const auto slid
-			= ImGui::SliderFloat("Box Min X", &boxmin[selected_box].x(), _scenemin.x(), _scenemax.x())
-			| ImGui::SliderFloat("Box Min Y", &boxmin[selected_box].y(), _scenemin.y(), _scenemax.y())
-			| ImGui::SliderFloat("Box Min Z", &boxmin[selected_box].z(), _scenemin.z(), _scenemax.z())
-			| ImGui::SliderFloat("Box Max X", &boxmax[selected_box].x(), _scenemin.x(), _scenemax.x())
-			| ImGui::SliderFloat("Box Max Y", &boxmax[selected_box].y(), _scenemin.y(), _scenemax.y())
-			| ImGui::SliderFloat("Box Max Z", &boxmax[selected_box].z(), _scenemin.z(), _scenemax.z());
-		if (slid) {
-			CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(boxmin_cuda, boxmin.data()->data(), sizeof(float3) * boxmin.size(), cudaMemcpyHostToDevice));
-			CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(boxmax_cuda, boxmax.data()->data(), sizeof(float3) * boxmax.size(), cudaMemcpyHostToDevice));
-		}
-		{
-			using namespace ImGui;
-			Begin("Point view");
-			ImGuizmo::SetDrawlist();
-			ImGuizmo::SetRect(GetWindowPos().x, GetWindowPos().y, GetWindowWidth(), GetWindowHeight());
-
-			using Mat = Matrix4f;
-			std::vector<Mat> box_mats(boxmin.size());
-			for (auto i = 0; i < boxmin.size(); ++i) {
-				Vector3f transl = (boxmin[i] + boxmax[i]) / 2.f, rot = Vector3f::Zero(), scale = boxmax[i] - boxmin[i];
-				ImGuizmo::RecomposeMatrixFromComponents(transl.data(), rot.data(), scale.data(), box_mats[i].data());
-			}
-
-			using namespace ImGuizmo::Modes;
-			ImGuizmo::DrawCubes<Poly::LINE, Color::PER_NORMAL>(last_cam->view().data(), last_cam->proj().data(), box_mats[0].data(), box_mats.size());
-			End();
-		}
-		//ImGui::InputText("File", _buff, 512);
-		//if (ImGui::Button("Save"))
-		//{
-		//	std::vector<Pos> pos(count);
-		//	std::vector<Rot> rot(count);
-		//	std::vector<float> opacity(count);
-		//	std::vector<SHs<3>> shs(count);
-		//	std::vector<Scale> scale(count);
-		//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(pos.data(), pos_cuda, sizeof(Pos) * count, cudaMemcpyDeviceToHost));
-		//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(rot.data(), rot_cuda, sizeof(Rot) * count, cudaMemcpyDeviceToHost));
-		//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(opacity.data(), opacity_cuda, sizeof(float) * count, cudaMemcpyDeviceToHost));
-		//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(shs.data(), shs_cuda, sizeof(SHs<3>) * count, cudaMemcpyDeviceToHost));
-		//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(scale.data(), scale_cuda, sizeof(Scale) * count, cudaMemcpyDeviceToHost));
-		//	savePly(_buff, pos, shs, opacity, scale, rot, _boxmin, _boxmax);
-		//}
+		ImGui::EndCombo();
 	}
 
+	using FORWARD::Cull::Names;
+	if (ImGui::BeginCombo("Box Combination Op.", Names[selected_operation]))
+	{
+		for (int i = 0; i < Names.size(); ++i) {
+			if (ImGui::Selectable(Names[i], selected_operation == i)) {
+				selected_operation = i;
+			}
+		}
+		ImGui::EndCombo();
+	}
+
+	if (ImGui::Button("Add Box") && boxmin.size() < 16) {
+		boxmin.emplace_back(_scenemin);
+		boxmax.emplace_back(_scenemax);
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Remove Box") && boxmin.size() > 1) {
+		boxmin.pop_back();
+		boxmax.pop_back();
+		selected_box = std::max(selected_box - 1, 0);
+		ImGui::BeginCombo("Select Crop Box", selected_text.c_str());
+	}
+
+	ImGui::SameLine();
+	ImGui::Text("Active Boxes: %i/16", boxmin.size());
+
+	if (std::invoke([&] {
+		bool slid{};
+		ImGui::PushItemWidth(.45f * ImGui::GetWindowWidth());
+
+		ImGui::TextColored({ 1,0,0,1 }, "X");
+		ImGui::SameLine();
+		slid |= ImGui::SliderFloat("##min x", &boxmin[selected_box].x(), _scenemin.x(), _scenemax.x());
+		ImGui::SameLine();
+		slid |= ImGui::SliderFloat("##max x", &boxmax[selected_box].x(), _scenemin.x(), _scenemax.x());
+
+		ImGui::TextColored({ 0,1,0,1 }, "Y");
+		ImGui::SameLine();
+		slid |= ImGui::SliderFloat("##min y", &boxmin[selected_box].y(), _scenemin.y(), _scenemax.y());
+		ImGui::SameLine();
+		slid |= ImGui::SliderFloat("##max y", &boxmax[selected_box].y(), _scenemin.y(), _scenemax.y());
+
+		ImGui::TextColored({ 0,0,1,1 }, "Z");
+		ImGui::SameLine();
+		slid |= ImGui::SliderFloat("##min z", &boxmin[selected_box].z(), _scenemin.z(), _scenemax.z());
+		ImGui::SameLine();
+		slid |= ImGui::SliderFloat("##max z", &boxmax[selected_box].z(), _scenemin.z(), _scenemax.z());
+
+		ImGui::PopItemWidth();
+		return slid;
+		}))
+	{
+		CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(boxmin_cuda, boxmin.data()->data(), sizeof(float3) * boxmin.size(), cudaMemcpyHostToDevice));
+		CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(boxmax_cuda, boxmax.data()->data(), sizeof(float3) * boxmax.size(), cudaMemcpyHostToDevice));
+	}
+
+	if (ImGui::Begin("Point view")) {
+		using namespace ImGui;
+
+		ImGuizmo::SetDrawlist();
+		ImGuizmo::SetRect(GetWindowPos().x, GetWindowPos().y, GetWindowWidth(), GetWindowHeight());
+
+		using Mat = Matrix4f;
+		std::vector<Mat> box_mats(boxmin.size());
+		for (auto i = 0; i < boxmin.size(); ++i) {
+			Vector3f transl = (boxmin[i] + boxmax[i]) / 2.f, rot = Vector3f::Zero(), scale = boxmax[i] - boxmin[i];
+			ImGuizmo::RecomposeMatrixFromComponents(transl.data(), rot.data(), scale.data(), box_mats[i].data());
+		}
+
+		using namespace ImGuizmo::Modes;
+		ImGuizmo::DrawCubes<Poly::LINE, Color::PER_NORMAL>(last_cam->view().data(), last_cam->proj().data(), box_mats[0].data(), box_mats.size());
+	}
+	ImGui::End();
+
+	//ImGui::InputText("File", _buff, 512);
+	//if (ImGui::Button("Save"))
+	//{
+	//	std::vector<Pos> pos(count);
+	//	std::vector<Rot> rot(count);
+	//	std::vector<float> opacity(count);
+	//	std::vector<SHs<3>> shs(count);
+	//	std::vector<Scale> scale(count);
+	//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(pos.data(), pos_cuda, sizeof(Pos) * count, cudaMemcpyDeviceToHost));
+	//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(rot.data(), rot_cuda, sizeof(Rot) * count, cudaMemcpyDeviceToHost));
+	//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(opacity.data(), opacity_cuda, sizeof(float) * count, cudaMemcpyDeviceToHost));
+	//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(shs.data(), shs_cuda, sizeof(SHs<3>) * count, cudaMemcpyDeviceToHost));
+	//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(scale.data(), scale_cuda, sizeof(Scale) * count, cudaMemcpyDeviceToHost));
+	//	savePly(_buff, pos, shs, opacity, scale, rot, _boxmin, _boxmax);
+	//}
 	ImGui::End();
 
 	if (!*_dontshow && !accepted && _interop_failed)

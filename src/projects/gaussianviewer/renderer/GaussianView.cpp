@@ -185,63 +185,53 @@ void savePly(const char* filename,
 	const std::vector<float>& opacities,
 	const std::vector<Scale>& scales,
 	const std::vector<Rot>& rot,
-	const sibr::Vector3f& minn,
-	const sibr::Vector3f& maxx)
+	const std::vector<sibr::Vector3f>& minn,
+	const std::vector<sibr::Vector3f>& maxx,
+	FORWARD::Cull::Operator op
+)
 {
-	// Read all Gaussians at once (AoS)
-	int count = 0;
-	for (int i = 0; i < pos.size(); i++)
-	{
-		if (pos[i].x() < minn.x() || pos[i].y() < minn.y() || pos[i].z() < minn.z() ||
-			pos[i].x() > maxx.x() || pos[i].y() > maxx.y() || pos[i].z() > maxx.z())
+	std::vector<RichPoint<3>> points;
+	points.reserve(pos.size());
+	for (int i = 0; i < pos.size(); ++i) {
+		using namespace FORWARD::Cull;
+		if (Boxes<sibr::Vector3f>{minn.data(), maxx.data(), static_cast<int>(minn.size())}.TryCull(pos[i], op))
 			continue;
-		count++;
+
+		auto& p = points.emplace_back();
+
+		p.pos = pos[i];
+		p.rot = rot[i];
+		// Exponentiate scale
+		for (int j = 0; j < 3; j++)
+			p.scale.scale[j] = log(scales[i].scale[j]);
+		// Activate alpha
+		p.opacity = inverse_sigmoid(opacities[i]);
+		p.shs.shs[0] = shs[i].shs[0];
+		p.shs.shs[1] = shs[i].shs[1];
+		p.shs.shs[2] = shs[i].shs[2];
+		for (int j = 1; j < 16; j++)
+		{
+			p.shs.shs[(j - 1) + 3] = shs[i].shs[j * 3 + 0];
+			p.shs.shs[(j - 1) + 18] = shs[i].shs[j * 3 + 1];
+			p.shs.shs[(j - 1) + 33] = shs[i].shs[j * 3 + 2];
+		}
 	}
-	std::vector<RichPoint<3>> points(count);
 
 	// Output number of Gaussians contained
-	SIBR_LOG << "Saving " << count << " Gaussian splats" << std::endl;
+	SIBR_LOG << "Saving " << points.size() << " Gaussian splats" << std::endl;
 
 	std::ofstream outfile(filename, std::ios_base::binary);
+	outfile << "ply\nformat binary_little_endian 1.0\nelement vertex " << points.size() << "\n";
 
-	outfile << "ply\nformat binary_little_endian 1.0\nelement vertex " << count << "\n";
-
-	std::string props1[] = { "x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2" };
-	std::string props2[] = { "opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3" };
-
-	for (auto s : props1)
+	for (auto s : { "x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2" })
 		outfile << "property float " << s << std::endl;
 	for (int i = 0; i < 45; i++)
 		outfile << "property float f_rest_" << i << std::endl;
-	for (auto s : props2)
+	for (auto s : { "opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3" })
 		outfile << "property float " << s << std::endl;
 	outfile << "end_header" << std::endl;
 
-	count = 0;
-	for (int i = 0; i < pos.size(); i++)
-	{
-		if (pos[i].x() < minn.x() || pos[i].y() < minn.y() || pos[i].z() < minn.z() ||
-			pos[i].x() > maxx.x() || pos[i].y() > maxx.y() || pos[i].z() > maxx.z())
-			continue;
-		points[count].pos = pos[i];
-		points[count].rot = rot[i];
-		// Exponentiate scale
-		for (int j = 0; j < 3; j++)
-			points[count].scale.scale[j] = log(scales[i].scale[j]);
-		// Activate alpha
-		points[count].opacity = inverse_sigmoid(opacities[i]);
-		points[count].shs.shs[0] = shs[i].shs[0];
-		points[count].shs.shs[1] = shs[i].shs[1];
-		points[count].shs.shs[2] = shs[i].shs[2];
-		for (int j = 1; j < 16; j++)
-		{
-			points[count].shs.shs[(j - 1) + 3] = shs[i].shs[j * 3 + 0];
-			points[count].shs.shs[(j - 1) + 18] = shs[i].shs[j * 3 + 1];
-			points[count].shs.shs[(j - 1) + 33] = shs[i].shs[j * 3 + 2];
-		}
-		count++;
-	}
-	outfile.write((char*)points.data(), sizeof(RichPoint<3>) * points.size());
+	outfile.write((char*)points.data(), sizeof(decltype(points)::value_type) * points.size());
 }
 
 namespace sibr
@@ -681,21 +671,21 @@ void sibr::GaussianView::onGUI()
 		}
 		ImGui::End();
 
-		//ImGui::InputText("File", _buff, 512);
-		//if (ImGui::Button("Save"))
-		//{
-		//	std::vector<Pos> pos(count);
-		//	std::vector<Rot> rot(count);
-		//	std::vector<float> opacity(count);
-		//	std::vector<SHs<3>> shs(count);
-		//	std::vector<Scale> scale(count);
-		//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(pos.data(), pos_cuda, sizeof(Pos) * count, cudaMemcpyDeviceToHost));
-		//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(rot.data(), rot_cuda, sizeof(Rot) * count, cudaMemcpyDeviceToHost));
-		//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(opacity.data(), opacity_cuda, sizeof(float) * count, cudaMemcpyDeviceToHost));
-		//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(shs.data(), shs_cuda, sizeof(SHs<3>) * count, cudaMemcpyDeviceToHost));
-		//	CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(scale.data(), scale_cuda, sizeof(Scale) * count, cudaMemcpyDeviceToHost));
-		//	savePly(_buff, pos, shs, opacity, scale, rot, _boxmin, _boxmax);
-		//}
+		ImGui::InputText("File", _buff, 512);
+		if (ImGui::Button("Save"))
+		{
+			std::vector<Pos> pos(count);
+			std::vector<Rot> rot(count);
+			std::vector<float> opacity(count);
+			std::vector<SHs<3>> shs(count);
+			std::vector<Scale> scale(count);
+			CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(pos.data(), pos_cuda, sizeof(Pos) * count, cudaMemcpyDeviceToHost));
+			CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(rot.data(), rot_cuda, sizeof(Rot) * count, cudaMemcpyDeviceToHost));
+			CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(opacity.data(), opacity_cuda, sizeof(float) * count, cudaMemcpyDeviceToHost));
+			CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(shs.data(), shs_cuda, sizeof(SHs<3>) * count, cudaMemcpyDeviceToHost));
+			CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(scale.data(), scale_cuda, sizeof(Scale) * count, cudaMemcpyDeviceToHost));
+			savePly(_buff, pos, shs, opacity, scale, rot, boxmin, boxmax, static_cast<FORWARD::Cull::Operator::Value>(selected_operation));
+		}
 	}
 	ImGui::End();
 

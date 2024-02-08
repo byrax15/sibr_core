@@ -10,21 +10,21 @@
  */
 #pragma once
 
-# include "Config.hpp"
-# include <core/renderer/RenderMaskHolder.hpp>
-# include <core/scene/BasicIBRScene.hpp>
-# include <core/system/SimpleTimer.hpp>
-# include <core/system/Config.hpp>
-# include <core/graphics/Mesh.hpp>
-# include <core/view/ViewBase.hpp>
-# include <core/renderer/CopyRenderer.hpp>
-# include <core/renderer/PointBasedRenderer.hpp>
-# include <memory>
-# include <core/graphics/Texture.hpp>
+#include "Config.hpp"
+#include <core/renderer/RenderMaskHolder.hpp>
+#include <core/scene/BasicIBRScene.hpp>
+#include <core/system/SimpleTimer.hpp>
+#include <core/system/Config.hpp>
+#include <core/graphics/Mesh.hpp>
+#include <core/view/ViewBase.hpp>
+#include <core/renderer/CopyRenderer.hpp>
+#include <core/renderer/PointBasedRenderer.hpp>
+#include <memory>
+#include <core/graphics/Texture.hpp>
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 #include <functional>
-# include "GaussianSurfaceRenderer.hpp"
+#include "GaussianSurfaceRenderer.hpp"
 
 namespace CudaRasterizer
 {
@@ -101,8 +101,8 @@ namespace sibr {
 		float* opacity_cuda;
 		float* shs_cuda;
 		int* rect_cuda;
-
 		float* boxmin_cuda, * boxmax_cuda;
+
 		int selected_box = 0;
 		std::vector<Vector3f> boxmin, boxmax;
 		int selected_operation = 0;

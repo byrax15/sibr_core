@@ -529,7 +529,7 @@ void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camer
 			boxmin.size(),
 			boxmin_cuda,
 			boxmax_cuda,
-			static_cast<FORWARD::Cull::Operator>(selected_operation)
+			static_cast<FORWARD::Cull::Operator::Value>(selected_operation)
 		);
 
 		if (!_interop_failed)
@@ -625,11 +625,11 @@ void sibr::GaussianView::onGUI()
 			ImGui::EndCombo();
 		}
 
-		using FORWARD::Cull::Names;
-		if (ImGui::BeginCombo("Box Combination Op.", Names[selected_operation]))
+		using FORWARD::Cull::Operator;
+		if (ImGui::BeginCombo("Box Combination Op.", Operator::Names[selected_operation]))
 		{
-			for (int i = 0; i < Names.size(); ++i) {
-				if (ImGui::Selectable(Names[i], selected_operation == i)) {
+			for (int i = 0; i < Operator::Names.size(); ++i) {
+				if (ImGui::Selectable(Operator::Names[i], selected_operation == i)) {
 					selected_operation = i;
 				}
 			}

@@ -29,7 +29,7 @@ file(GLOB SOURCES "*.cpp" "*.h" "*.hpp" "shaders/*.frag" "shaders/*.vert" "shade
 ## Specify target rules
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
 
-include_directories(${Boost_INCLUDE_DIRS} .)
+include_directories(${Boost_INCLUDE_DIRS}	.)
 if (WIN32)
 	target_link_libraries(${PROJECT_NAME}	glfw3)
 else()

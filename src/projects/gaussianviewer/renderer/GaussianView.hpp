@@ -11,127 +11,136 @@
 #pragma once
 
 #include "Config.hpp"
-#include <core/renderer/RenderMaskHolder.hpp>
-#include <core/scene/BasicIBRScene.hpp>
-#include <core/system/SimpleTimer.hpp>
-#include <core/system/Config.hpp>
+#include "GaussianSurfaceRenderer.hpp"
 #include <core/graphics/Mesh.hpp>
-#include <core/view/ViewBase.hpp>
+#include <core/graphics/Texture.hpp>
 #include <core/renderer/CopyRenderer.hpp>
 #include <core/renderer/PointBasedRenderer.hpp>
-#include <memory>
-#include <core/graphics/Texture.hpp>
-#include <cuda_runtime.h>
+#include <core/renderer/RenderMaskHolder.hpp>
+#include <core/scene/BasicIBRScene.hpp>
+#include <core/system/Config.hpp>
+#include <core/system/SimpleTimer.hpp>
+#include <core/view/ViewBase.hpp>
 #include <cuda_gl_interop.h>
+#include <cuda_runtime.h>
 #include <functional>
-#include "GaussianSurfaceRenderer.hpp"
+#include <memory>
 
-namespace CudaRasterizer
-{
-	class Rasterizer;
+namespace CudaRasterizer {
+class Rasterizer;
 }
 
 namespace sibr {
 
-	class BufferCopyRenderer;
-	class BufferCopyRenderer2;
+class BufferCopyRenderer;
+class BufferCopyRenderer2;
 
-	/**
-	 * \class RemotePointView
-	 * \brief Wrap a ULR renderer with additional parameters and information.
-	 */
-	class SIBR_EXP_ULR_EXPORT GaussianView : public sibr::ViewBase
-	{
-		SIBR_CLASS_PTR(GaussianView);
+struct GaussianScene {
+    size_t start_index, size;
 
-	public:
+    template <typename CudaT, typename HostT, typename Callable>
+    void for_each(CudaT* mapped_buffer, Callable&& c) const;
 
-		/**
-		 * Constructor
-		 * \param ibrScene The scene to use for rendering.
-		 * \param render_w rendering width
-		 * \param render_h rendering height
-		 */
-		GaussianView(const sibr::BasicIBRScene::Ptr& ibrScene, uint render_w, uint render_h, const char* file, bool* message_read, int sh_degree, bool white_bg = false, bool useInterop = true, int device = 0);
+private:
+    template <typename CudaT, typename HostT>
+    std::vector<HostT> MemcpyToHost(CudaT const* src_buffer) const;
 
-		/** Replace the current scene.
-		 *\param newScene the new scene to render */
-		void setScene(const sibr::BasicIBRScene::Ptr& newScene);
+    template <typename CudaT, typename HostT>
+    void MemcpyToDevice(std::vector<HostT> const& upload, CudaT* dst_buffer) const;
+};
 
-		/**
-		 * Perform rendering. Called by the view manager or rendering mode.
-		 * \param dst The destination rendertarget.
-		 * \param eye The novel viewpoint.
-		 */
-		void onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camera& eye) override;
+/**
+ * \class RemotePointView
+ * \brief Wrap a ULR renderer with additional parameters and information.
+ */
+class SIBR_EXP_ULR_EXPORT GaussianView : public sibr::ViewBase {
+    SIBR_CLASS_PTR(GaussianView);
 
-		/**
-		 * Update inputs (do nothing).
-		 * \param input The inputs state.
-		 */
-		void onUpdate(Input& input) override;
+public:
+    /**
+     * Constructor
+     * \param ibrScene The scene to use for rendering.
+     * \param render_w rendering width
+     * \param render_h rendering height
+     */
+    GaussianView(const sibr::BasicIBRScene::Ptr& ibrScene, uint render_w, uint render_h, const char* file, bool* message_read, int sh_degree, bool white_bg = false, bool useInterop = true, int device = 0);
 
-		/**
-		 * Update the GUI.
-		 */
-		void onGUI() override;
+    /** Replace the current scene.
+     *\param newScene the new scene to render */
+    void setScene(const sibr::BasicIBRScene::Ptr& newScene);
 
-		/** \return a reference to the scene */
-		const std::shared_ptr<sibr::BasicIBRScene>& getScene() const { return _scene; }
+    /**
+     * Perform rendering. Called by the view manager or rendering mode.
+     * \param dst The destination rendertarget.
+     * \param eye The novel viewpoint.
+     */
+    void onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camera& eye) override;
 
-		virtual ~GaussianView() override;
+    /**
+     * Update inputs (do nothing).
+     * \param input The inputs state.
+     */
+    void onUpdate(Input& input) override;
 
-		bool* _dontshow;
+    /**
+     * Update the GUI.
+     */
+    void onGUI() override;
 
-	protected:
+    /** \return a reference to the scene */
+    const std::shared_ptr<sibr::BasicIBRScene>& getScene() const { return _scene; }
 
-		std::string currMode = "Splats";
+    virtual ~GaussianView() override;
 
-		Vector3f _scenemin, _scenemax;
-		char _buff[512] = "cropped.ply";
+    bool* _dontshow;
 
-		bool _fastCulling = true;
-		int _device = 0;
-		int _sh_degree = 3;
+protected:
+    std::string currMode = "Splats";
 
-		int count;
-		float* pos_cuda;
-		float* rot_cuda;
-		float* scale_cuda;
-		float* opacity_cuda;
-		float* shs_cuda;
-		int* rect_cuda;
-		float* boxmin_cuda, * boxmax_cuda;
+    Vector3f _scenemin, _scenemax;
 
-		int selected_box = 0;
-		std::vector<Vector3f> boxmin, boxmax;
-		int selected_operation = 0;
+    bool _fastCulling = true;
+    int _device = 0;
+    int _sh_degree = 3;
 
-		GLuint imageBuffer;
-		cudaGraphicsResource_t imageBufferCuda;
+    int count;
+    float* pos_cuda;
+    float* rot_cuda;
+    float* scale_cuda;
+    float* opacity_cuda;
+    float* shs_cuda;
+    int* rect_cuda;
+    float *boxmin_cuda, *boxmax_cuda;
 
-		size_t allocdGeom = 0, allocdBinning = 0, allocdImg = 0;
-		void* geomPtr = nullptr, * binningPtr = nullptr, * imgPtr = nullptr;
-		std::function<char* (size_t N)> geomBufferFunc, binningBufferFunc, imgBufferFunc;
+    std::vector<Vector3f> boxmin, boxmax;
+    int selected_box = 0;
+    int selected_operation = 0;
+    std::vector<GaussianScene> scenes;
 
-		float* view_cuda;
-		float* proj_cuda;
-		float* cam_pos_cuda;
-		float* background_cuda;
+    GLuint imageBuffer;
+    cudaGraphicsResource_t imageBufferCuda;
 
-		float _scalingModifier = 1.0f;
-		GaussianData* gData;
+    size_t allocdGeom = 0, allocdBinning = 0, allocdImg = 0;
+    void *geomPtr = nullptr, *binningPtr = nullptr, *imgPtr = nullptr;
+    std::function<char*(size_t N)> geomBufferFunc, binningBufferFunc, imgBufferFunc;
 
-		bool _interop_failed = false;
-		std::vector<char> fallback_bytes;
-		float* fallbackBufferCuda = nullptr;
-		bool accepted = false;
+    float* view_cuda;
+    float* proj_cuda;
+    float* cam_pos_cuda;
+    float* background_cuda;
 
+    float _scalingModifier = 1.0f;
+    GaussianData* gData;
 
-		std::shared_ptr<sibr::BasicIBRScene> _scene; ///< The current scene.
-		PointBasedRenderer::Ptr _pointbasedrenderer;
-		BufferCopyRenderer* _copyRenderer;
-		GaussianSurfaceRenderer* _gaussianRenderer;
-	};
+    bool _interop_failed = false;
+    std::vector<char> fallback_bytes;
+    float* fallbackBufferCuda = nullptr;
+    bool accepted = false;
+
+    std::shared_ptr<sibr::BasicIBRScene> _scene; ///< The current scene.
+    PointBasedRenderer::Ptr _pointbasedrenderer;
+    BufferCopyRenderer* _copyRenderer;
+    GaussianSurfaceRenderer* _gaussianRenderer;
+};
 
 } /*namespace sibr*/

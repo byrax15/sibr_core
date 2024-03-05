@@ -10,6 +10,7 @@
 set(SIBR_PROJECT "gaussian")
 project(sibr_${SIBR_PROJECT} LANGUAGES CXX)
 
+
 sibr_gitlibrary(TARGET CudaRasterizer
     GIT_REPOSITORY 	"https://github.com/byrax15/diff-gaussian-rasterization.git"
     GIT_TAG			"culling_operators"

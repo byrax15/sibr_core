@@ -13,6 +13,7 @@
 #include "ImGuizmo.h"
 #include <boost/asio.hpp>
 #include <core/graphics/GUI.hpp>
+#include <ranges>
 #include <rasterizer.h>
 #include <thread>
 
@@ -343,7 +344,8 @@ sibr::GaussianView::GaussianView(const sibr::BasicIBRScene::Ptr& ibrScene, uint 
         count = loadPly<3>(file, pos, shs, opacity, scale, rot, _scenemin, _scenemax);
     }
 
-    int P = count;
+    const auto P = count;
+    scenes.emplace_back(GaussianScene { 0, static_cast<size_t>(P) });
 
     // Allocate and fill the GPU data
     CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&pos_cuda, sizeof(Pos) * P));
@@ -621,26 +623,65 @@ void sibr::GaussianView::onGUI()
             }
 
             ImGuizmo::DrawCubes(
-                last_cam->view().data(), last_cam->proj().data(), 
+                last_cam->view().data(), last_cam->proj().data(),
                 box_mats[0].data(), box_mats.size(),
-                ImGuizmo::DrawMode::EDGES
-            );
+                ImGuizmo::DrawMode::EDGES);
         }
         ImGui::End();
 
-        ImGui::InputText("File", _buff, 512);
-        if (ImGui::Button("Save")) {
-            std::vector<Pos> pos(count);
-            std::vector<Rot> rot(count);
-            std::vector<float> opacity(count);
-            std::vector<SHs<3>> shs(count);
-            std::vector<Scale> scale(count);
-            CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(pos.data(), pos_cuda, sizeof(Pos) * count, cudaMemcpyDeviceToHost));
-            CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(rot.data(), rot_cuda, sizeof(Rot) * count, cudaMemcpyDeviceToHost));
-            CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(opacity.data(), opacity_cuda, sizeof(float) * count, cudaMemcpyDeviceToHost));
-            CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(shs.data(), shs_cuda, sizeof(SHs<3>) * count, cudaMemcpyDeviceToHost));
-            CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(scale.data(), scale_cuda, sizeof(Scale) * count, cudaMemcpyDeviceToHost));
-            savePly(_buff, pos, shs, opacity, scale, rot, boxmin, boxmax, static_cast<FORWARD::Cull::Operator::Value>(selected_operation));
+        if (ImGui::Button("Save...")) {
+            std::string fname;
+            if (sibr::showFilePicker(fname, sibr::FilePickerMode::Save, "", "ply")) {
+                std::vector<Pos> pos(count);
+                std::vector<Rot> rot(count);
+                std::vector<float> opacity(count);
+                std::vector<SHs<3>> shs(count);
+                std::vector<Scale> scale(count);
+                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(pos.data(), pos_cuda, sizeof(Pos) * count, cudaMemcpyDeviceToHost));
+                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(rot.data(), rot_cuda, sizeof(Rot) * count, cudaMemcpyDeviceToHost));
+                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(opacity.data(), opacity_cuda, sizeof(float) * count, cudaMemcpyDeviceToHost));
+                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(shs.data(), shs_cuda, sizeof(SHs<3>) * count, cudaMemcpyDeviceToHost));
+                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(scale.data(), scale_cuda, sizeof(Scale) * count, cudaMemcpyDeviceToHost));
+                savePly(fname.c_str(), pos, shs, opacity, scale, rot, boxmin, boxmax, static_cast<FORWARD::Cull::Operator::Value>(selected_operation));
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Load...")) {
+            std::string fname;
+            if (sibr::showFilePicker(fname, sibr::FilePickerMode::Default, "", "ply")) {
+                /*std::vector<Pos> pos;
+                std::vector<Rot> rot;
+                std::vector<float> opacity;
+                std::vector<SHs<3>> shs;
+                std::vector<Scale> scale;
+                sibr::Vector3f min, max;
+                switch (_sh_degree) {
+                case 1:
+                    loadPly<1>(fname.c_str(), pos, shs, opacity, scale, rot, min, max);
+                    break;
+                case 2:
+                    loadPly<2>(fname.c_str(), pos, shs, opacity, scale, rot, min, max);
+                    break;
+                case 3:
+                    loadPly<3>(fname.c_str(), pos, shs, opacity, scale, rot, min, max);
+                    break;
+                default:
+                    SIBR_LOG << "Unsupported SH degree " << _sh_degree << "\n";
+                }*/
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Resize")) {
+            static bool reduce = true;
+            const float i = 1.f;
+            for (const auto& s : scenes) {
+                //++i;
+                if (reduce)
+                    s.for_each<float, sibr::Vector3f>(pos_cuda, [i](sibr::Vector3f& p) { p.y() += i; });
+                else
+                    s.for_each<float, sibr::Vector3f>(pos_cuda, [i](sibr::Vector3f& p) { p.y() -= i; });
+            }
+            reduce = !reduce;
         }
     }
     ImGui::End();
@@ -703,4 +744,31 @@ sibr::GaussianView::~GaussianView()
         cudaFree(imgPtr);
 
     delete _copyRenderer;
+}
+
+template <typename CudaT, typename HostT>
+std::vector<HostT> sibr::GaussianScene::MemcpyToHost(CudaT const* src_buffer) const
+{
+    static_assert(sizeof CudaT <= sizeof HostT);
+    std::vector<HostT> copy(this->size);
+    const auto start_ptr = reinterpret_cast<HostT const*>(src_buffer) + start_index;
+    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(copy.data(), start_ptr, size * sizeof(HostT), cudaMemcpyDeviceToHost));
+    return copy;
+}
+
+template <typename CudaT, typename HostT>
+void sibr::GaussianScene::MemcpyToDevice(std::vector<HostT> const& upload, CudaT* dst_buffer) const
+{
+    static_assert(sizeof CudaT <= sizeof HostT);
+    constexpr auto size_ratio = sizeof(HostT) / sizeof(CudaT);
+    const auto start_ptr = reinterpret_cast<HostT*>(dst_buffer) + start_index;
+    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(start_ptr, upload.data(), size * sizeof(HostT), cudaMemcpyHostToDevice));
+}
+
+template <typename CudaT, typename HostT, typename Callable>
+void sibr::GaussianScene::for_each(CudaT* mapped_buffer, Callable&& c) const
+{
+    auto gauss = MemcpyToHost<CudaT, HostT>(mapped_buffer);
+    std::for_each(gauss.begin(), gauss.end(), c);
+    MemcpyToDevice<CudaT, HostT>(gauss, mapped_buffer);
 }

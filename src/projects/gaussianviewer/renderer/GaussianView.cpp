@@ -598,8 +598,7 @@ void sibr::GaussianView::onUpdate(Input& input)
 void sibr::GaussianView::onGUI()
 {
     // Generate and update UI elements
-    const std::string guiName = "3D Gaussians";
-    if (ImGui::Begin(guiName.c_str())) {
+    if (ImGui::Begin("Render")) {
         if (ImGui::BeginCombo("Render Mode", currMode.c_str())) {
             if (ImGui::Selectable("Splats"))
                 currMode = "Splats";
@@ -612,7 +611,10 @@ void sibr::GaussianView::onGUI()
         if (currMode == "Splats") {
             ImGui::SliderFloat("Scaling Modifier", &_scalingModifier, 0.001f, 1.0f);
         }
+    }
+    ImGui::End();
 
+    if (ImGui::Begin("Selection")) {
         const auto MemcpyBoxes = [&] {
             CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(boxmin_cuda, boxmin.data()->data(), sizeof(float3) * boxmin.size(), cudaMemcpyHostToDevice));
             CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(boxmax_cuda, boxmax.data()->data(), sizeof(float3) * boxmax.size(), cudaMemcpyHostToDevice));
@@ -629,22 +631,13 @@ void sibr::GaussianView::onGUI()
         if (ImGui::Button("Remove Box") && boxmin.size() > 1) {
             boxmin.pop_back();
             boxmax.pop_back();
-            selected_box = std::max(selected_box - 1, 0);
-            ImGui::BeginCombo("Select Crop Box", selected_text.c_str());
+            selected_box = selected_box == boxmin.size() ? selected_box - 1 : selected_box;
         }
         ImGui::SameLine();
         ImGui::Text("Active Boxes: %i/16", boxmin.size());
 
-        if (ImGui::BeginCombo("Select Crop Box", selected_text.c_str())) {
-            assert(boxmin.size() == boxmax.size());
-            for (int i = 0; i < boxmin.size(); ++i) {
-                const auto label = std::to_string(i);
-                if (ImGui::Selectable(label.c_str(), selected_box == i)) {
-                    selected_box = i;
-                }
-            }
-            ImGui::EndCombo();
-        }
+        assert(boxmin.size() == boxmax.size());
+        ImGui::SliderInt("Crop Box", &selected_box, 0, boxmin.size() - 1);
 
         using FORWARD::Cull::Operator;
         if (ImGui::BeginCombo("Box Combination Op.", Operator::Names[selected_operation])) {
@@ -682,47 +675,11 @@ void sibr::GaussianView::onGUI()
         }
         if (slid)
             MemcpyBoxes();
+    }
+    ImGui::End();
 
-        ImGui::Begin("Point view");
-        {
-            using namespace ImGui;
-
-            ImGuizmo::SetDrawlist();
-            ImGuizmo::SetRect(GetWindowPos().x, GetWindowPos().y, GetWindowWidth(), GetWindowHeight());
-
-            using Mat = Matrix4f;
-            std::vector<Mat> box_mats(boxmin.size());
-            for (auto i = 0; i < boxmin.size(); ++i) {
-                Vector3f transl = (boxmin[i] + boxmax[i]) / 2.f, rot = Vector3f::Zero(), scale = boxmax[i] - boxmin[i];
-                ImGuizmo::RecomposeMatrixFromComponents(transl.data(), rot.data(), scale.data(), box_mats[i].data());
-            }
-
-            ImGuizmo::DrawCubes(
-                last_cam->view().data(), last_cam->proj().data(),
-                box_mats[0].data(), box_mats.size(),
-                ImGuizmo::DrawMode::EDGES);
-        }
-        ImGui::End();
-
-        if (ImGui::Button("Save...")) {
-            std::string fname;
-            if (sibr::showFilePicker(fname, sibr::FilePickerMode::Save, "", "ply")) {
-                std::vector<Pos> pos(count);
-                std::vector<Rot> rot(count);
-                std::vector<float> opacity(count);
-                std::vector<SHs<3>> shs(count);
-                std::vector<Scale> scale(count);
-                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(pos.data(), pos_cuda, sizeof(Pos) * count, cudaMemcpyDeviceToHost));
-                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(rot.data(), rot_cuda, sizeof(Rot) * count, cudaMemcpyDeviceToHost));
-                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(opacity.data(), opacity_cuda, sizeof(float) * count, cudaMemcpyDeviceToHost));
-                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(shs.data(), shs_cuda, sizeof(SHs<3>) * count, cudaMemcpyDeviceToHost));
-                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(scale.data(), scale_cuda, sizeof(Scale) * count, cudaMemcpyDeviceToHost));
-                savePly(fname.c_str(), pos, shs, opacity, scale, rot, boxmin, boxmax, static_cast<FORWARD::Cull::Operator::Value>(selected_operation));
-            }
-        }
-
-        ImGui::SameLine();
-        if (ImGui::Button("Load...")) {
+    if (ImGui::Begin("Scenes")) {
+        if (ImGui::Button("Load subscene...")) {
             std::string fname;
             if (sibr::showFilePicker(fname, sibr::FilePickerMode::Default, "", "ply")) {
                 std::vector<Pos> pos;
@@ -764,19 +721,8 @@ void sibr::GaussianView::onGUI()
             }
         }
 
-        ImGui::SliderInt("Scene", &selected_scene, 0, scenes.size() - 1);
-        if (ImGui::Button("Resize")) {
-            static bool reduce = true;
-            const auto& s = scenes[selected_scene];
-            //++i;
-            if (reduce)
-                s.for_each<float, float>(opacity_cuda, [](float& o) { o /= 100.f; });
-            else
-                s.for_each<float, float>(opacity_cuda, [](float& o) { o *= 100.f; });
-            reduce = !reduce;
-        }
         ImGui::SameLine();
-        if (ImGui::Button("Trim scene") && scenes.size() > 1) {
+        if (ImGui::Button("Remove subscene") && scenes.size() > 1) {
             const auto& s = scenes[selected_scene];
             s.EraseCompact<float, Pos>(pos_cuda, count);
             s.EraseCompact<float, Rot>(rot_cuda, count);
@@ -787,6 +733,45 @@ void sibr::GaussianView::onGUI()
             scenes.resize(scenes.size() - 1);
             selected_scene = selected_scene == scenes.size() ? selected_scene - 1 : selected_scene;
         }
+
+        ImGui::SliderInt("Subscene", &selected_scene, 0, scenes.size() - 1);
+
+        if (ImGui::Button("Save All...")) {
+            std::string fname;
+            if (sibr::showFilePicker(fname, sibr::FilePickerMode::Save, "", "ply")) {
+                std::vector<Pos> pos(count);
+                std::vector<Rot> rot(count);
+                std::vector<float> opacity(count);
+                std::vector<SHs<3>> shs(count);
+                std::vector<Scale> scale(count);
+                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(pos.data(), pos_cuda, sizeof(Pos) * count, cudaMemcpyDeviceToHost));
+                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(rot.data(), rot_cuda, sizeof(Rot) * count, cudaMemcpyDeviceToHost));
+                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(opacity.data(), opacity_cuda, sizeof(float) * count, cudaMemcpyDeviceToHost));
+                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(shs.data(), shs_cuda, sizeof(SHs<3>) * count, cudaMemcpyDeviceToHost));
+                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(scale.data(), scale_cuda, sizeof(Scale) * count, cudaMemcpyDeviceToHost));
+                savePly(fname.c_str(), pos, shs, opacity, scale, rot, boxmin, boxmax, static_cast<FORWARD::Cull::Operator::Value>(selected_operation));
+            }
+        }
+    }
+    ImGui::End();
+
+    if (ImGui::Begin("Point view")) {
+        using namespace ImGui;
+
+        ImGuizmo::SetDrawlist();
+        ImGuizmo::SetRect(GetWindowPos().x, GetWindowPos().y, GetWindowWidth(), GetWindowHeight());
+
+        using Mat = Matrix4f;
+        std::vector<Mat> box_mats(boxmin.size());
+        for (auto i = 0; i < boxmin.size(); ++i) {
+            Vector3f transl = (boxmin[i] + boxmax[i]) / 2.f, rot = Vector3f::Zero(), scale = boxmax[i] - boxmin[i];
+            ImGuizmo::RecomposeMatrixFromComponents(transl.data(), rot.data(), scale.data(), box_mats[i].data());
+        }
+
+        ImGuizmo::DrawCubes(
+            last_cam->view().data(), last_cam->proj().data(),
+            box_mats[0].data(), box_mats.size(),
+            ImGuizmo::DrawMode::EDGES);
     }
     ImGui::End();
 

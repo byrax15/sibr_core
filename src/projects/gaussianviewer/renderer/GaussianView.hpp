@@ -35,19 +35,7 @@ namespace sibr {
 class BufferCopyRenderer;
 class BufferCopyRenderer2;
 
-struct GaussianScene {
-    size_t start_index, size;
-
-    template <typename CudaT, typename HostT, typename Callable>
-    void for_each(CudaT* mapped_buffer, Callable&& c) const;
-
-private:
-    template <typename CudaT, typename HostT>
-    std::vector<HostT> MemcpyToHost(CudaT const* src_buffer) const;
-
-    template <typename CudaT, typename HostT>
-    void MemcpyToDevice(std::vector<HostT> const& upload, CudaT* dst_buffer) const;
-};
+struct GaussianScene;
 
 /**
  * \class RemotePointView
@@ -99,7 +87,6 @@ protected:
 
     Vector3f _scenemin, _scenemax;
 
-    bool _fastCulling = true;
     int _device = 0;
     int _sh_degree = 3;
 
@@ -116,6 +103,7 @@ protected:
     int selected_box = 0;
     int selected_operation = 0;
     std::vector<GaussianScene> scenes;
+    int selected_scene = 0;
 
     GLuint imageBuffer;
     cudaGraphicsResource_t imageBufferCuda;

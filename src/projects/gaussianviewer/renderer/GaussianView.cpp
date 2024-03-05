@@ -225,6 +225,82 @@ void savePly(const char* filename,
     outfile.write((char*)points.data(), sizeof(decltype(points)::value_type) * points.size());
 }
 
+template <typename CudaT, typename HostT>
+void cudaReallocMemcpy(CudaT*& buf_realloc, size_t old_count, std::vector<HostT> const& append_data)
+{
+    static_assert(sizeof HostT >= sizeof CudaT);
+    const auto old_size = old_count * sizeof(HostT);
+    const auto append_size = append_data.size() * sizeof(HostT);
+    const auto new_size = old_size + append_size;
+
+    CudaT* buf_new {};
+    CUDA_SAFE_CALL_ALWAYS(cudaMalloc(&buf_new, new_size));
+    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(buf_new, buf_realloc, old_size, cudaMemcpyDeviceToDevice));
+    auto host_offset = reinterpret_cast<HostT*>(buf_new) + old_count;
+    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(host_offset, append_data.data(), append_size, cudaMemcpyHostToDevice));
+    CUDA_SAFE_CALL_ALWAYS(cudaFree(buf_realloc));
+    buf_realloc = buf_new;
+}
+
+struct sibr::GaussianScene {
+    size_t start_index, count;
+
+    template <typename CudaT, typename HostT, typename Callable>
+    void for_each(CudaT* mapped_buffer, Callable&& c) const;
+
+    template <typename CudaT, typename HostT>
+    void EraseCompact(CudaT*& mapped_buffer, size_t old_size) const;
+
+    auto begin() const { return start_index; }
+    auto end() const { return start_index + count; }
+
+private:
+    template <typename CudaT, typename HostT>
+    std::vector<HostT> MemcpyToHost(CudaT const* src_buffer) const;
+
+    template <typename CudaT, typename HostT>
+    void MemcpyToDevice(std::vector<HostT> const& upload, CudaT* dst_buffer) const;
+};
+
+template <typename CudaT, typename HostT>
+std::vector<HostT> sibr::GaussianScene::MemcpyToHost(CudaT const* src_buffer) const
+{
+    static_assert(sizeof CudaT <= sizeof HostT);
+    std::vector<HostT> copy(this->count);
+    const auto start_ptr = reinterpret_cast<HostT const*>(src_buffer) + start_index;
+    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(copy.data(), start_ptr, count * sizeof(HostT), cudaMemcpyDeviceToHost));
+    return copy;
+}
+
+template <typename CudaT, typename HostT>
+void sibr::GaussianScene::MemcpyToDevice(std::vector<HostT> const& upload, CudaT* dst_buffer) const
+{
+    static_assert(sizeof CudaT <= sizeof HostT);
+    constexpr auto size_ratio = sizeof(HostT) / sizeof(CudaT);
+    const auto start_ptr = reinterpret_cast<HostT*>(dst_buffer) + start_index;
+    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(start_ptr, upload.data(), count * sizeof(HostT), cudaMemcpyHostToDevice));
+}
+
+template <typename CudaT, typename HostT, typename Callable>
+void sibr::GaussianScene::for_each(CudaT* mapped_buffer, Callable&& c) const
+{
+    auto gauss = MemcpyToHost<CudaT, HostT>(mapped_buffer);
+    std::for_each(gauss.begin(), gauss.end(), c);
+    MemcpyToDevice<CudaT, HostT>(gauss, mapped_buffer);
+}
+
+template <typename CudaT, typename HostT>
+void sibr::GaussianScene::EraseCompact(CudaT*& mapped_buffer, size_t old_count) const
+{
+    HostT*& buf_old = reinterpret_cast<HostT*&>(mapped_buffer);
+    HostT* buf_new {};
+    CUDA_SAFE_CALL_ALWAYS(cudaMalloc(&buf_new, (old_count - count) * sizeof(HostT)));
+    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(buf_new, buf_old, start_index * sizeof(HostT), cudaMemcpyDeviceToDevice));
+    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(buf_new + start_index, buf_old + end(), (old_count - end()) * sizeof(HostT), cudaMemcpyDeviceToDevice));
+    CUDA_SAFE_CALL_ALWAYS(cudaFree(mapped_buffer));
+    mapped_buffer = reinterpret_cast<CudaT*>(buf_new);
+}
+
 namespace sibr {
 // A simple copy renderer class. Much like the original, but this one
 // reads from a buffer instead of a texture and blits the result to
@@ -482,7 +558,7 @@ void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camer
             false,
             image_cuda,
             nullptr,
-            _fastCulling ? rect_cuda : nullptr,
+            rect_cuda,
             boxmin.size(),
             boxmin_cuda,
             boxmax_cuda,
@@ -536,7 +612,6 @@ void sibr::GaussianView::onGUI()
         if (currMode == "Splats") {
             ImGui::SliderFloat("Scaling Modifier", &_scalingModifier, 0.001f, 1.0f);
         }
-        ImGui::Checkbox("Fast culling", &_fastCulling);
 
         const auto MemcpyBoxes = [&] {
             CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(boxmin_cuda, boxmin.data()->data(), sizeof(float3) * boxmin.size(), cudaMemcpyHostToDevice));
@@ -645,43 +720,72 @@ void sibr::GaussianView::onGUI()
                 savePly(fname.c_str(), pos, shs, opacity, scale, rot, boxmin, boxmax, static_cast<FORWARD::Cull::Operator::Value>(selected_operation));
             }
         }
+
         ImGui::SameLine();
         if (ImGui::Button("Load...")) {
             std::string fname;
             if (sibr::showFilePicker(fname, sibr::FilePickerMode::Default, "", "ply")) {
-                /*std::vector<Pos> pos;
+                std::vector<Pos> pos;
                 std::vector<Rot> rot;
                 std::vector<float> opacity;
                 std::vector<SHs<3>> shs;
                 std::vector<Scale> scale;
                 sibr::Vector3f min, max;
-                switch (_sh_degree) {
-                case 1:
-                    loadPly<1>(fname.c_str(), pos, shs, opacity, scale, rot, min, max);
-                    break;
-                case 2:
-                    loadPly<2>(fname.c_str(), pos, shs, opacity, scale, rot, min, max);
-                    break;
-                case 3:
-                    loadPly<3>(fname.c_str(), pos, shs, opacity, scale, rot, min, max);
-                    break;
-                default:
-                    SIBR_LOG << "Unsupported SH degree " << _sh_degree << "\n";
-                }*/
+                const auto append_count = std::invoke([&] {
+                    switch (_sh_degree) {
+                    case 1:
+                        return loadPly<1>(fname.c_str(), pos, shs, opacity, scale, rot, min, max);
+                    case 2:
+                        return loadPly<2>(fname.c_str(), pos, shs, opacity, scale, rot, min, max);
+                    case 3:
+                        return loadPly<3>(fname.c_str(), pos, shs, opacity, scale, rot, min, max);
+                    default:
+                        SIBR_LOG << "Unsupported SH degree (" << _sh_degree << ")\n";
+                        return 0;
+                    }
+                });
+                if (append_count > 0) {
+                    scenes.emplace_back(GaussianScene {
+                        static_cast<size_t>(count),
+                        static_cast<size_t>(append_count) });
+
+                    cudaReallocMemcpy(pos_cuda, count, pos);
+                    cudaReallocMemcpy(rot_cuda, count, rot);
+                    cudaReallocMemcpy(opacity_cuda, count, opacity);
+                    cudaReallocMemcpy(shs_cuda, count, shs);
+                    cudaReallocMemcpy(scale_cuda, count, scale);
+
+                    _scenemin = std::min(min, _scenemin);
+                    _scenemax = std::max(max, _scenemax);
+                    count += append_count;
+                } else {
+                    SIBR_LOG << "Skipping scene addition (" << append_count << " in file)\n";
+                }
             }
         }
-        ImGui::SameLine();
+
+        ImGui::SliderInt("Scene", &selected_scene, 0, scenes.size() - 1);
         if (ImGui::Button("Resize")) {
             static bool reduce = true;
-            const float i = 1.f;
-            for (const auto& s : scenes) {
-                //++i;
-                if (reduce)
-                    s.for_each<float, sibr::Vector3f>(pos_cuda, [i](sibr::Vector3f& p) { p.y() += i; });
-                else
-                    s.for_each<float, sibr::Vector3f>(pos_cuda, [i](sibr::Vector3f& p) { p.y() -= i; });
-            }
+            const auto& s = scenes[selected_scene];
+            //++i;
+            if (reduce)
+                s.for_each<float, float>(opacity_cuda, [](float& o) { o /= 100.f; });
+            else
+                s.for_each<float, float>(opacity_cuda, [](float& o) { o *= 100.f; });
             reduce = !reduce;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Trim scene") && scenes.size() > 1) {
+            const auto& s = scenes[selected_scene];
+            s.EraseCompact<float, Pos>(pos_cuda, count);
+            s.EraseCompact<float, Rot>(rot_cuda, count);
+            s.EraseCompact<float, float>(opacity_cuda, count);
+            s.EraseCompact<float, SHs<3>>(shs_cuda, count);
+            s.EraseCompact<float, Scale>(scale_cuda, count);
+            count -= s.count;
+            scenes.resize(scenes.size() - 1);
+            selected_scene = selected_scene == scenes.size() ? selected_scene - 1 : selected_scene;
         }
     }
     ImGui::End();
@@ -744,31 +848,4 @@ sibr::GaussianView::~GaussianView()
         cudaFree(imgPtr);
 
     delete _copyRenderer;
-}
-
-template <typename CudaT, typename HostT>
-std::vector<HostT> sibr::GaussianScene::MemcpyToHost(CudaT const* src_buffer) const
-{
-    static_assert(sizeof CudaT <= sizeof HostT);
-    std::vector<HostT> copy(this->size);
-    const auto start_ptr = reinterpret_cast<HostT const*>(src_buffer) + start_index;
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(copy.data(), start_ptr, size * sizeof(HostT), cudaMemcpyDeviceToHost));
-    return copy;
-}
-
-template <typename CudaT, typename HostT>
-void sibr::GaussianScene::MemcpyToDevice(std::vector<HostT> const& upload, CudaT* dst_buffer) const
-{
-    static_assert(sizeof CudaT <= sizeof HostT);
-    constexpr auto size_ratio = sizeof(HostT) / sizeof(CudaT);
-    const auto start_ptr = reinterpret_cast<HostT*>(dst_buffer) + start_index;
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(start_ptr, upload.data(), size * sizeof(HostT), cudaMemcpyHostToDevice));
-}
-
-template <typename CudaT, typename HostT, typename Callable>
-void sibr::GaussianScene::for_each(CudaT* mapped_buffer, Callable&& c) const
-{
-    auto gauss = MemcpyToHost<CudaT, HostT>(mapped_buffer);
-    std::for_each(gauss.begin(), gauss.end(), c);
-    MemcpyToDevice<CudaT, HostT>(gauss, mapped_buffer);
 }

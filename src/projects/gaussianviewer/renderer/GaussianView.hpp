@@ -12,6 +12,7 @@
 
 #include "Config.hpp"
 #include "GaussianSurfaceRenderer.hpp"
+#include "GaussianScene.hpp"
 #include <core/graphics/Mesh.hpp>
 #include <core/graphics/Texture.hpp>
 #include <core/renderer/CopyRenderer.hpp>
@@ -34,8 +35,6 @@ namespace sibr {
 
 class BufferCopyRenderer;
 class BufferCopyRenderer2;
-
-struct GaussianScene;
 
 /**
  * \class RemotePointView

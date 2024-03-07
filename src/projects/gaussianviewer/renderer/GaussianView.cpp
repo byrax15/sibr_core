@@ -10,6 +10,7 @@
  */
 
 #include "GaussianView.hpp"
+#include "CUDA_SAFE_CALL_ALWAYS.h"
 #include "ImGuizmo.h"
 #include <boost/asio.hpp>
 #include <core/graphics/GUI.hpp>
@@ -49,18 +50,6 @@ float inverse_sigmoid(const float m1)
 {
     return log(m1 / (1.0f - m1));
 }
-
-#define CUDA_SAFE_CALL_ALWAYS(A)              \
-    A;                                        \
-    cudaDeviceSynchronize();                  \
-    if (cudaPeekAtLastError() != cudaSuccess) \
-        SIBR_ERR << cudaGetErrorString(cudaGetLastError());
-
-#if DEBUG || _DEBUG
-#define CUDA_SAFE_CALL(A) CUDA_SAFE_CALL_ALWAYS(A)
-#else
-#define CUDA_SAFE_CALL(A) A
-#endif
 
 // Load the Gaussians from the given file.
 template <int D>
@@ -240,65 +229,6 @@ void cudaReallocMemcpy(CudaT*& buf_realloc, size_t old_count, std::vector<HostT>
     CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(host_offset, append_data.data(), append_size, cudaMemcpyHostToDevice));
     CUDA_SAFE_CALL_ALWAYS(cudaFree(buf_realloc));
     buf_realloc = buf_new;
-}
-
-struct sibr::GaussianScene {
-    size_t start_index, count;
-
-    template <typename CudaT, typename HostT, typename Callable>
-    void for_each(CudaT* mapped_buffer, Callable&& c) const;
-
-    template <typename CudaT, typename HostT>
-    void EraseCompact(CudaT*& mapped_buffer, size_t old_size) const;
-
-    auto begin() const { return start_index; }
-    auto end() const { return start_index + count; }
-
-private:
-    template <typename CudaT, typename HostT>
-    std::vector<HostT> MemcpyToHost(CudaT const* src_buffer) const;
-
-    template <typename CudaT, typename HostT>
-    void MemcpyToDevice(std::vector<HostT> const& upload, CudaT* dst_buffer) const;
-};
-
-template <typename CudaT, typename HostT>
-std::vector<HostT> sibr::GaussianScene::MemcpyToHost(CudaT const* src_buffer) const
-{
-    static_assert(sizeof CudaT <= sizeof HostT);
-    std::vector<HostT> copy(this->count);
-    const auto start_ptr = reinterpret_cast<HostT const*>(src_buffer) + start_index;
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(copy.data(), start_ptr, count * sizeof(HostT), cudaMemcpyDeviceToHost));
-    return copy;
-}
-
-template <typename CudaT, typename HostT>
-void sibr::GaussianScene::MemcpyToDevice(std::vector<HostT> const& upload, CudaT* dst_buffer) const
-{
-    static_assert(sizeof CudaT <= sizeof HostT);
-    constexpr auto size_ratio = sizeof(HostT) / sizeof(CudaT);
-    const auto start_ptr = reinterpret_cast<HostT*>(dst_buffer) + start_index;
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(start_ptr, upload.data(), count * sizeof(HostT), cudaMemcpyHostToDevice));
-}
-
-template <typename CudaT, typename HostT, typename Callable>
-void sibr::GaussianScene::for_each(CudaT* mapped_buffer, Callable&& c) const
-{
-    auto gauss = MemcpyToHost<CudaT, HostT>(mapped_buffer);
-    std::for_each(gauss.begin(), gauss.end(), c);
-    MemcpyToDevice<CudaT, HostT>(gauss, mapped_buffer);
-}
-
-template <typename CudaT, typename HostT>
-void sibr::GaussianScene::EraseCompact(CudaT*& mapped_buffer, size_t old_count) const
-{
-    HostT*& buf_old = reinterpret_cast<HostT*&>(mapped_buffer);
-    HostT* buf_new {};
-    CUDA_SAFE_CALL_ALWAYS(cudaMalloc(&buf_new, (old_count - count) * sizeof(HostT)));
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(buf_new, buf_old, start_index * sizeof(HostT), cudaMemcpyDeviceToDevice));
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(buf_new + start_index, buf_old + end(), (old_count - end()) * sizeof(HostT), cudaMemcpyDeviceToDevice));
-    CUDA_SAFE_CALL_ALWAYS(cudaFree(mapped_buffer));
-    mapped_buffer = reinterpret_cast<CudaT*>(buf_new);
 }
 
 namespace sibr {
@@ -735,6 +665,12 @@ void sibr::GaussianView::onGUI()
         }
 
         ImGui::SliderInt("Subscene", &selected_scene, 0, scenes.size() - 1);
+        static float new_opacity = 1;
+        if (ImGui::SliderFloat("Opacity", &new_opacity, 0, 1)) {
+            auto& s = scenes[selected_scene];
+            const auto delta_op = s.SetOpacity(new_opacity);
+            s.for_each<float, float>(opacity_cuda, [delta_op](float& o) { o *= delta_op; });
+        }
 
         if (ImGui::Button("Save All...")) {
             std::string fname;
@@ -811,6 +747,8 @@ sibr::GaussianView::~GaussianView()
     cudaFree(scale_cuda);
     cudaFree(opacity_cuda);
     cudaFree(shs_cuda);
+    cudaFree(boxmin_cuda);
+    cudaFree(boxmax_cuda);
 
     cudaFree(view_cuda);
     cudaFree(proj_cuda);
@@ -825,12 +763,9 @@ sibr::GaussianView::~GaussianView()
     }
     glDeleteBuffers(1, &imageBuffer);
 
-    if (geomPtr)
-        cudaFree(geomPtr);
-    if (binningPtr)
-        cudaFree(binningPtr);
-    if (imgPtr)
-        cudaFree(imgPtr);
+    cudaFree(geomPtr);
+    cudaFree(binningPtr);
+    cudaFree(imgPtr);
 
     delete _copyRenderer;
 }

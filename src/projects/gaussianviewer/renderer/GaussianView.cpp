@@ -11,35 +11,12 @@
 
 #include "GaussianView.hpp"
 #include "CUDA_SAFE_CALL_ALWAYS.h"
+#include "GaussianProperties.hpp"
 #include "ImGuizmo.h"
 #include <boost/asio.hpp>
 #include <core/graphics/GUI.hpp>
-#include <ranges>
 #include <rasterizer.h>
 #include <thread>
-
-// Define the types and sizes that make up the contents of each Gaussian
-// in the trained model.
-typedef sibr::Vector3f Pos;
-template <int D>
-struct SHs {
-    float shs[(D + 1) * (D + 1) * 3];
-};
-struct Scale {
-    float scale[3];
-};
-struct Rot {
-    float rot[4];
-};
-template <int D>
-struct RichPoint {
-    Pos pos;
-    float n[3];
-    SHs<D> shs;
-    float opacity;
-    Scale scale;
-    Rot rot;
-};
 
 float sigmoid(const float m1)
 {
@@ -222,13 +199,12 @@ void cudaReallocMemcpy(CudaT*& buf_realloc, size_t old_count, std::vector<HostT>
     const auto append_size = append_data.size() * sizeof(HostT);
     const auto new_size = old_size + append_size;
 
-    CudaT* buf_new {};
+    HostT* buf_new {};
     CUDA_SAFE_CALL_ALWAYS(cudaMalloc(&buf_new, new_size));
     CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(buf_new, buf_realloc, old_size, cudaMemcpyDeviceToDevice));
-    auto host_offset = reinterpret_cast<HostT*>(buf_new) + old_count;
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(host_offset, append_data.data(), append_size, cudaMemcpyHostToDevice));
+    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(buf_new + old_count, append_data.data(), append_size, cudaMemcpyHostToDevice));
     CUDA_SAFE_CALL_ALWAYS(cudaFree(buf_realloc));
-    buf_realloc = buf_new;
+    buf_realloc = reinterpret_cast<CudaT*>(buf_new);
 }
 
 namespace sibr {
@@ -688,6 +664,8 @@ void sibr::GaussianView::onGUI()
                 savePly(fname.c_str(), pos, shs, opacity, scale, rot, boxmin, boxmax, static_cast<FORWARD::Cull::Operator::Value>(selected_operation));
             }
         }
+        ImGui::SameLine();
+        ImGui::Text("Gaussians count sum : %i", count);
     }
     ImGui::End();
 

@@ -195,15 +195,16 @@ template <typename CudaT, typename HostT>
 void cudaReallocMemcpy(CudaT*& buf_realloc, size_t old_count, std::vector<HostT> const& append_data)
 {
     static_assert(sizeof HostT >= sizeof CudaT);
-    const auto old_size = old_count * sizeof(HostT);
-    const auto append_size = append_data.size() * sizeof(HostT);
-    const auto new_size = old_size + append_size;
+    constexpr auto ByteSize = [](size_t count) { return (count * sizeof(HostT)); };
 
+    const auto& buf_old = reinterpret_cast<HostT*&>(buf_realloc);
     HostT* buf_new {};
-    CUDA_SAFE_CALL_ALWAYS(cudaMalloc(&buf_new, new_size));
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(buf_new, buf_realloc, old_size, cudaMemcpyDeviceToDevice));
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(buf_new + old_count, append_data.data(), append_size, cudaMemcpyHostToDevice));
-    CUDA_SAFE_CALL_ALWAYS(cudaFree(buf_realloc));
+
+    CUDA_SAFE_CALL_ALWAYS(cudaMalloc(&buf_new, ByteSize(old_count + append_data.size())));
+    CUDA_SAFE_CALL(cudaMemcpy(buf_new, buf_old, ByteSize(old_count), cudaMemcpyDeviceToDevice));
+    CUDA_SAFE_CALL(cudaMemcpy(buf_new + old_count, append_data.data(), ByteSize(append_data.size()), cudaMemcpyHostToDevice));
+
+    cudaFree(buf_old);
     buf_realloc = reinterpret_cast<CudaT*>(buf_new);
 }
 
@@ -635,8 +636,13 @@ void sibr::GaussianView::onGUI()
             s.EraseCompact<float, float>(opacity_cuda, count);
             s.EraseCompact<float, SHs<3>>(shs_cuda, count);
             s.EraseCompact<float, Scale>(scale_cuda, count);
+
             count -= s.count;
-            scenes.resize(scenes.size() - 1);
+            scenes.erase(std::next(scenes.begin(), selected_scene));
+            scenes[0].start_index = 0;
+            for (auto i = 1; i < scenes.size(); ++i) {
+                scenes[i].start_index = scenes[i - 1].end();
+            }
             selected_scene = selected_scene == scenes.size() ? selected_scene - 1 : selected_scene;
         }
 

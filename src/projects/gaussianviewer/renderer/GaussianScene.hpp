@@ -1,7 +1,7 @@
 #pragma once
 
-#include <vector>
 #include "CUDA_SAFE_CALL_ALWAYS.h"
+#include <vector>
 
 namespace sibr {
 struct GaussianScene {
@@ -34,7 +34,7 @@ public:
     void for_each(CudaT* mapped_buffer, Callable&& c) const;
 
     template <typename CudaT, typename HostT>
-    void EraseCompact(CudaT*& mapped_buffer, size_t old_size) const;
+    void EraseCompact(CudaT*& mapped_buffer, size_t old_count) const;
 
     auto begin() const { return start_index; }
     auto end() const { return start_index + count; }
@@ -78,11 +78,15 @@ void sibr::GaussianScene::for_each(CudaT* mapped_buffer, Callable&& c) const
 template <typename CudaT, typename HostT>
 void sibr::GaussianScene::EraseCompact(CudaT*& mapped_buffer, size_t old_count) const
 {
+    constexpr auto ByteSize = [](size_t count) { return (count * sizeof(HostT)); };
+
     HostT*& buf_old = reinterpret_cast<HostT*&>(mapped_buffer);
     HostT* buf_new {};
-    CUDA_SAFE_CALL_ALWAYS(cudaMalloc(&buf_new, (old_count - count) * sizeof(HostT)));
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(buf_new, buf_old, start_index * sizeof(HostT), cudaMemcpyDeviceToDevice));
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(buf_new + start_index, buf_old + end(), (old_count - end()) * sizeof(HostT), cudaMemcpyDeviceToDevice));
-    CUDA_SAFE_CALL_ALWAYS(cudaFree(mapped_buffer));
+
+    CUDA_SAFE_CALL(cudaMalloc(&buf_new, ByteSize(old_count - count)));
+    CUDA_SAFE_CALL(cudaMemcpy(buf_new, buf_old, ByteSize(start_index), cudaMemcpyDeviceToDevice));
+    CUDA_SAFE_CALL(cudaMemcpy(buf_new + start_index, buf_old + end(), ByteSize(old_count - end()), cudaMemcpyDeviceToDevice));
+    
+    cudaFree(buf_old);
     mapped_buffer = reinterpret_cast<CudaT*>(buf_new);
 }

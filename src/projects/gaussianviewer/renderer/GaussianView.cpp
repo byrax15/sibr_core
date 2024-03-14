@@ -208,6 +208,23 @@ void cudaReallocMemcpy(CudaT*& buf_realloc, size_t old_count, std::vector<HostT>
     buf_realloc = reinterpret_cast<CudaT*>(buf_new);
 }
 
+static inline void glReallocGaussianData(sibr::GaussianData*& gData, size_t count,
+    float* pos_cuda, float* rot_cuda, float* scale_cuda, float* opacity_cuda, float* shs_cuda)
+{
+    std::vector<Pos> all_pos(count);
+    std::vector<Rot> all_rot(count);
+    std::vector<float> all_opacity(count);
+    std::vector<SHs<3>> all_shs(count);
+    std::vector<Scale> all_scale(count);
+    cudaMemcpy(all_pos.data(), pos_cuda, count * sizeof(Pos), cudaMemcpyDeviceToHost);
+    cudaMemcpy(all_rot.data(), rot_cuda, count * sizeof(Rot), cudaMemcpyDeviceToHost);
+    cudaMemcpy(all_opacity.data(), opacity_cuda, count * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(all_shs.data(), shs_cuda, count * sizeof(SHs<3>), cudaMemcpyDeviceToHost);
+    cudaMemcpy(all_scale.data(), scale_cuda, count * sizeof(Scale), cudaMemcpyDeviceToHost);
+
+    gData->set_buffers(count, (float*)all_pos.data(), (float*)all_rot.data(), (float*)all_scale.data(), (float*)all_opacity.data(), (float*)all_shs.data());
+}
+
 namespace sibr {
 // A simple copy renderer class. Much like the original, but this one
 // reads from a buffer instead of a texture and blits the result to
@@ -608,22 +625,25 @@ void sibr::GaussianView::onGUI()
                         return 0;
                     }
                 });
+                if ((append_count + count) <= count) {
+                    SIBR_LOG << "Skipping scene: Scene addition would cause certain integer overflow\n";
+                }
                 if (append_count > 0) {
                     scenes.emplace_back(GaussianScene {
                         static_cast<size_t>(count),
                         static_cast<size_t>(append_count) });
-
                     cudaReallocMemcpy(pos_cuda, count, pos);
                     cudaReallocMemcpy(rot_cuda, count, rot);
                     cudaReallocMemcpy(opacity_cuda, count, opacity);
                     cudaReallocMemcpy(shs_cuda, count, shs);
                     cudaReallocMemcpy(scale_cuda, count, scale);
-
                     _scenemin = std::min(min, _scenemin);
                     _scenemax = std::max(max, _scenemax);
                     count += append_count;
+                    glReallocGaussianData(gData, count,
+                        pos_cuda, rot_cuda, scale_cuda, opacity_cuda, shs_cuda);
                 } else {
-                    SIBR_LOG << "Skipping scene addition (" << append_count << " in file)\n";
+                    SIBR_LOG << "Skipping scene: no gaussian recognized in file\n";
                 }
             }
         }
@@ -644,6 +664,9 @@ void sibr::GaussianView::onGUI()
                 scenes[i].start_index = scenes[i - 1].end();
             }
             selected_scene = selected_scene == scenes.size() ? selected_scene - 1 : selected_scene;
+
+            glReallocGaussianData(gData, count,
+                pos_cuda, rot_cuda, scale_cuda, opacity_cuda, shs_cuda);
         }
 
         ImGui::SliderInt("Subscene", &selected_scene, 0, scenes.size() - 1);
@@ -670,8 +693,11 @@ void sibr::GaussianView::onGUI()
                 savePly(fname.c_str(), pos, shs, opacity, scale, rot, boxmin, boxmax, static_cast<FORWARD::Cull::Operator::Value>(selected_operation));
             }
         }
-        ImGui::SameLine();
+
         ImGui::Text("Gaussians count sum : %i", count);
+        for (auto i = scenes.begin(); i != scenes.end(); ++i) {
+            ImGui::Text("Scene #%i : start %i ; Sub-count %i", std::distance(scenes.begin(), i), i->start_index, i->count);
+        }
     }
     ImGui::End();
 

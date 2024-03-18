@@ -200,15 +200,23 @@ void cudaReallocMemcpy(CudaT*& buf_realloc, size_t old_count, std::vector<HostT>
     const auto& buf_old = reinterpret_cast<HostT*&>(buf_realloc);
     HostT* buf_new {};
 
-    CUDA_SAFE_CALL_ALWAYS(cudaMalloc(&buf_new, ByteSize(old_count + append_data.size())));
-    CUDA_SAFE_CALL(cudaMemcpy(buf_new, buf_old, ByteSize(old_count), cudaMemcpyDeviceToDevice));
-    CUDA_SAFE_CALL(cudaMemcpy(buf_new + old_count, append_data.data(), ByteSize(append_data.size()), cudaMemcpyHostToDevice));
-
+    cudaMalloc(&buf_new, ByteSize(old_count + append_data.size()));
+    cudaMemcpy(buf_new, buf_old, ByteSize(old_count), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(buf_new + old_count, append_data.data(), ByteSize(append_data.size()), cudaMemcpyHostToDevice);
+    CUDA_SAFE_CALL();
     cudaFree(buf_old);
     buf_realloc = reinterpret_cast<CudaT*>(buf_new);
 }
 
-static inline void glReallocGaussianData(sibr::GaussianData*& gData, size_t count,
+template <typename CudaT, typename HostT>
+static void cudaMallocMemcpy(CudaT*& buf, std::vector<HostT> const& data)
+{
+    cudaMalloc((void**)&buf, data.size() * sizeof(HostT));
+    cudaMemcpy(buf, data.data(), data.size() * sizeof(HostT), cudaMemcpyHostToDevice);
+    CUDA_SAFE_CALL();
+}
+
+static void glReallocGaussianData(sibr::GaussianData*& gData, size_t count,
     float* pos_cuda, float* rot_cuda, float* scale_cuda, float* opacity_cuda, float* shs_cuda)
 {
     std::vector<Pos> all_pos(count);
@@ -223,6 +231,20 @@ static inline void glReallocGaussianData(sibr::GaussianData*& gData, size_t coun
     cudaMemcpy(all_scale.data(), scale_cuda, count * sizeof(Scale), cudaMemcpyDeviceToHost);
 
     gData->set_buffers(count, (float*)all_pos.data(), (float*)all_rot.data(), (float*)all_scale.data(), (float*)all_opacity.data(), (float*)all_shs.data());
+}
+
+std::function<char*(size_t N)> resizeFunctional(void** ptr, size_t& S)
+{
+    auto lambda = [ptr, &S](size_t N) {
+        if (N > S) {
+            if (*ptr)
+                CUDA_SAFE_CALL(cudaFree(*ptr));
+            CUDA_SAFE_CALL(cudaMalloc(ptr, 2 * N));
+            S = 2 * N;
+        }
+        return reinterpret_cast<char*>(*ptr);
+    };
+    return lambda;
 }
 
 namespace sibr {
@@ -277,20 +299,6 @@ private:
     GLuniform<int> _width = 1000;
     GLuniform<int> _height = 800;
 };
-}
-
-std::function<char*(size_t N)> resizeFunctional(void** ptr, size_t& S)
-{
-    auto lambda = [ptr, &S](size_t N) {
-        if (N > S) {
-            if (*ptr)
-                CUDA_SAFE_CALL(cudaFree(*ptr));
-            CUDA_SAFE_CALL(cudaMalloc(ptr, 2 * N));
-            S = 2 * N;
-        }
-        return reinterpret_cast<char*>(*ptr);
-    };
-    return lambda;
 }
 
 sibr::GaussianView::GaussianView(const sibr::BasicIBRScene::Ptr& ibrScene, uint render_w, uint render_h, const char* file, bool* messageRead, int sh_degree, bool white_bg, bool useInterop, int device)
@@ -348,34 +356,27 @@ sibr::GaussianView::GaussianView(const sibr::BasicIBRScene::Ptr& ibrScene, uint 
     scenes.emplace_back(GaussianScene { 0, static_cast<size_t>(P) });
 
     // Allocate and fill the GPU data
-    CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&pos_cuda, sizeof(Pos) * P));
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(pos_cuda, pos.data(), sizeof(Pos) * P, cudaMemcpyHostToDevice));
-    CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&rot_cuda, sizeof(Rot) * P));
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(rot_cuda, rot.data(), sizeof(Rot) * P, cudaMemcpyHostToDevice));
-    CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&shs_cuda, sizeof(SHs<3>) * P));
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(shs_cuda, shs.data(), sizeof(SHs<3>) * P, cudaMemcpyHostToDevice));
-    CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&opacity_cuda, sizeof(float) * P));
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(opacity_cuda, opacity.data(), sizeof(float) * P, cudaMemcpyHostToDevice));
-    CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&scale_cuda, sizeof(Scale) * P));
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(scale_cuda, scale.data(), sizeof(Scale) * P, cudaMemcpyHostToDevice));
+    cudaMallocMemcpy(pos_cuda, pos);
+    cudaMallocMemcpy(rot_cuda, rot);
+    cudaMallocMemcpy(shs_cuda, shs);
+    cudaMallocMemcpy(opacity_cuda, opacity);
+    cudaMallocMemcpy(scale_cuda, scale);
 
     boxmin = { _scenemin };
     boxmax = { _scenemax };
-    CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&boxmin_cuda, sizeof(float3) * 16));
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(boxmin_cuda, boxmin.data(), sizeof(float3) * 16, cudaMemcpyHostToDevice));
-    CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&boxmax_cuda, sizeof(float3) * 16));
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(boxmax_cuda, boxmax.data(), sizeof(float3) * 16, cudaMemcpyHostToDevice));
+    cudaMallocMemcpy(boxmin_cuda, boxmin);
+    cudaMallocMemcpy(boxmax_cuda, boxmax);
 
     // Create space for view parameters
-    CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&view_cuda, sizeof(sibr::Matrix4f)));
-    CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&proj_cuda, sizeof(sibr::Matrix4f)));
-    CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&cam_pos_cuda, 3 * sizeof(float)));
-    CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&background_cuda, 3 * sizeof(float)));
-    CUDA_SAFE_CALL_ALWAYS(cudaMalloc((void**)&rect_cuda, 2 * P * sizeof(int)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&view_cuda, sizeof(sibr::Matrix4f)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&proj_cuda, sizeof(sibr::Matrix4f)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&cam_pos_cuda, 3 * sizeof(float)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&rect_cuda, 2 * P * sizeof(int)));
 
     const auto color = white_bg ? 1.f : 0.f;
     Vector3f bg(color, color, color);
-    CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(background_cuda, bg.data(), sizeof(Vector3f), cudaMemcpyHostToDevice));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&background_cuda, 3 * sizeof(float)));
+    CUDA_SAFE_CALL(cudaMemcpy(background_cuda, bg.data(), sizeof(Vector3f), cudaMemcpyHostToDevice));
 
     gData = new GaussianData(P,
         (float*)pos.data(),
@@ -383,7 +384,6 @@ sibr::GaussianView::GaussianView(const sibr::BasicIBRScene::Ptr& ibrScene, uint 
         (float*)scale.data(),
         opacity.data(),
         (float*)shs.data());
-
     _gaussianRenderer = new GaussianSurfaceRenderer();
 
     // Create GL buffer ready for CUDA/GL interop
@@ -540,8 +540,8 @@ void sibr::GaussianView::onGUI()
 
     if (ImGui::Begin("Selection")) {
         const auto MemcpyBoxes = [&] {
-            CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(boxmin_cuda, boxmin.data()->data(), sizeof(float3) * boxmin.size(), cudaMemcpyHostToDevice));
-            CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(boxmax_cuda, boxmax.data()->data(), sizeof(float3) * boxmax.size(), cudaMemcpyHostToDevice));
+            CUDA_SAFE_CALL(cudaMemcpy(boxmin_cuda, boxmin.data()->data(), sizeof(float3) * boxmin.size(), cudaMemcpyHostToDevice));
+            CUDA_SAFE_CALL(cudaMemcpy(boxmax_cuda, boxmax.data()->data(), sizeof(float3) * boxmax.size(), cudaMemcpyHostToDevice));
         };
 
         const std::string selected_text = std::to_string(selected_box);
@@ -553,9 +553,9 @@ void sibr::GaussianView::onGUI()
         }
         ImGui::SameLine();
         if (ImGui::Button("Remove Box") && boxmin.size() > 1) {
-            boxmin.pop_back();
-            boxmax.pop_back();
-            selected_box = selected_box == boxmin.size() ? selected_box - 1 : selected_box;
+            boxmin.erase(boxmin.begin() + selected_box);
+            boxmax.erase(boxmax.begin() + selected_box);
+            selected_box = std::min(static_cast<int>(boxmin.size() - 1), selected_box);
         }
         ImGui::SameLine();
         ImGui::Text("Active Boxes: %i/16", boxmin.size());
@@ -721,8 +721,9 @@ void sibr::GaussianView::onGUI()
     }
     ImGui::End();
 
-    if (!*_dontshow && !accepted && _interop_failed)
+    if (!*_dontshow && !accepted && _interop_failed) {
         ImGui::OpenPopup("Error Using Interop");
+    }
 
     if (!*_dontshow && !accepted && _interop_failed && ImGui::BeginPopupModal("Error Using Interop", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::SetItemDefaultFocus();

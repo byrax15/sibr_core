@@ -13,7 +13,7 @@ project(sibr_${SIBR_PROJECT} LANGUAGES CXX)
 
 sibr_gitlibrary(TARGET CudaRasterizer
     GIT_REPOSITORY 	"https://github.com/byrax15/diff-gaussian-rasterization.git"
-    GIT_TAG			"culling_operators"
+    GIT_TAG			"GeomBuffer_NoChunkAlloc"
 	#GIT_TAG			"2e38337134fdc767ef52fc4eb2f1f3b59922c5e7"
 )
 find_package(CUDAToolkit REQUIRED)

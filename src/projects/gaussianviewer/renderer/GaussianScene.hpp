@@ -1,11 +1,13 @@
 #pragma once
 
 #include "CUDA_SAFE_CALL_ALWAYS.h"
+#include "GaussianProperties.hpp"
 #include <vector>
 
 namespace sibr {
 struct GaussianScene {
     size_t start_index {}, count {};
+    Pos position;
     float opacity = 1;
 
     GaussianScene() = default;

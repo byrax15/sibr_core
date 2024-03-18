@@ -487,13 +487,17 @@ void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camer
             image_cuda = fallbackBufferCuda;
         }
 
-        for (const auto& [start, count, opacity] : scenes) {
+        for (const auto& [start, count, position, opacity] : scenes) {
+            std::vector<Pos> positions(count);
+            cudaMemcpy(positions.data(), scene_space.pos_cuda, count * sizeof(Pos), cudaMemcpyDeviceToHost);
+            std::for_each(std::execution::par_unseq, positions.begin(), positions.end(), [position = position](Pos& p) { p += position; });
+            cudaMemcpy(world_space.pos_cuda, positions.data(), count * sizeof(Pos), cudaMemcpyHostToDevice);
+
             std::vector<float> opacities(count);
             cudaMemcpy(opacities.data(), scene_space.opacity_cuda, count * sizeof(float), cudaMemcpyDeviceToHost);
             std::for_each(std::execution::par_unseq, opacities.begin(), opacities.end(), [opacity = opacity](float& op) { op *= opacity; });
             cudaMemcpy(world_space.opacity_cuda, opacities.data(), count * sizeof(float), cudaMemcpyHostToDevice);
 
-            cudaMemcpy(world_space.pos_cuda, scene_space.pos_cuda, count * sizeof(Pos), cudaMemcpyDeviceToDevice);
             cudaMemcpy(world_space.rot_cuda, scene_space.rot_cuda, count * sizeof(Rot), cudaMemcpyDeviceToDevice);
             cudaMemcpy(world_space.shs_cuda, scene_space.shs_cuda, count * sizeof(SHs<3>), cudaMemcpyDeviceToDevice);
             cudaMemcpy(world_space.scale_cuda, scene_space.scale_cuda, count * sizeof(Scale), cudaMemcpyDeviceToDevice);
@@ -731,6 +735,7 @@ void sibr::GaussianView::onGUI()
         ImGui::SliderInt("Subscene", &selected_scene, 0, scenes.size() - 1);
 
         auto& s = scenes[selected_scene];
+        ImGui::DragFloat3("Position", s.position.data());
         ImGui::SliderFloat("Opacity", &s.opacity, 0, 1);
 
         if (ImGui::Button("Save All...")) {
@@ -741,11 +746,11 @@ void sibr::GaussianView::onGUI()
                 std::vector<float> opacity(count);
                 std::vector<SHs<3>> shs(count);
                 std::vector<Scale> scale(count);
-                CUDA_SAFE_CALL(cudaMemcpy(pos.data(), scene_space.pos_cuda, sizeof(Pos) * count, cudaMemcpyDeviceToHost));
-                CUDA_SAFE_CALL(cudaMemcpy(rot.data(), scene_space.rot_cuda, sizeof(Rot) * count, cudaMemcpyDeviceToHost));
-                CUDA_SAFE_CALL(cudaMemcpy(opacity.data(), scene_space.opacity_cuda, sizeof(float) * count, cudaMemcpyDeviceToHost));
-                CUDA_SAFE_CALL(cudaMemcpy(shs.data(), scene_space.shs_cuda, sizeof(SHs<3>) * count, cudaMemcpyDeviceToHost));
-                CUDA_SAFE_CALL(cudaMemcpy(scale.data(), scene_space.scale_cuda, sizeof(Scale) * count, cudaMemcpyDeviceToHost));
+                CUDA_SAFE_CALL(cudaMemcpy(pos.data(), world_space.pos_cuda, sizeof(Pos) * count, cudaMemcpyDeviceToHost));
+                CUDA_SAFE_CALL(cudaMemcpy(rot.data(), world_space.rot_cuda, sizeof(Rot) * count, cudaMemcpyDeviceToHost));
+                CUDA_SAFE_CALL(cudaMemcpy(opacity.data(), world_space.opacity_cuda, sizeof(float) * count, cudaMemcpyDeviceToHost));
+                CUDA_SAFE_CALL(cudaMemcpy(shs.data(), world_space.shs_cuda, sizeof(SHs<3>) * count, cudaMemcpyDeviceToHost));
+                CUDA_SAFE_CALL(cudaMemcpy(scale.data(), world_space.scale_cuda, sizeof(Scale) * count, cudaMemcpyDeviceToHost));
                 savePly(fname.c_str(), pos, shs, opacity, scale, rot, boxmin, boxmax, static_cast<FORWARD::Cull::Operator::Value>(selected_operation));
             }
         }

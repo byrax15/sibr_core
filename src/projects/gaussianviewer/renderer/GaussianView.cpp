@@ -15,6 +15,7 @@
 #include "ImGuizmo.h"
 #include <boost/asio.hpp>
 #include <core/graphics/GUI.hpp>
+#include <execution>
 #include <rasterizer.h>
 #include <thread>
 
@@ -216,11 +217,16 @@ static void cudaMallocMemcpy(CudaT*& buf, std::vector<HostT> const& data)
     CUDA_SAFE_CALL();
 }
 
-template <typename CudaT, typename HostT>
+template <typename CudaT, typename HostT, bool copy_old = false>
 static void cudaRealloc(CudaT*& buf, size_t count)
 {
+    CudaT* newbuf {};
+    cudaMalloc(&newbuf, count * sizeof(HostT));
+    if constexpr (copy_old) {
+        cudaMemcpy(newbuf, buf, count * sizeof(HostT), cudaMemcpyDeviceToDevice);
+    }
     cudaFree(buf);
-    cudaMalloc(&buf, count * sizeof(HostT));
+    buf = newbuf;
 }
 
 static void glReallocGaussianData(sibr::GaussianData*& gData, size_t count,
@@ -481,6 +487,19 @@ void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camer
             image_cuda = fallbackBufferCuda;
         }
 
+        for (const auto& [start, count, opacity] : scenes) {
+            std::vector<float> opacities(count);
+            cudaMemcpy(opacities.data(), scene_space.opacity_cuda, count * sizeof(float), cudaMemcpyDeviceToHost);
+            std::for_each(std::execution::par_unseq, opacities.begin(), opacities.end(), [opacity = opacity](float& op) { op *= opacity; });
+            cudaMemcpy(world_space.opacity_cuda, opacities.data(), count * sizeof(float), cudaMemcpyHostToDevice);
+
+            cudaMemcpy(world_space.pos_cuda, scene_space.pos_cuda, count * sizeof(Pos), cudaMemcpyDeviceToDevice);
+            cudaMemcpy(world_space.rot_cuda, scene_space.rot_cuda, count * sizeof(Rot), cudaMemcpyDeviceToDevice);
+            cudaMemcpy(world_space.shs_cuda, scene_space.shs_cuda, count * sizeof(SHs<3>), cudaMemcpyDeviceToDevice);
+            cudaMemcpy(world_space.scale_cuda, scene_space.scale_cuda, count * sizeof(Scale), cudaMemcpyDeviceToDevice);
+        }
+
+        CUDA_SAFE_CALL();
         const auto num_rendered = CudaRasterizer::Rasterizer::forward(
             geomBufferFunc,
             binningBufferFunc,
@@ -488,13 +507,13 @@ void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camer
             count, _sh_degree, 16,
             background_cuda,
             _resolution.x(), _resolution.y(),
-            scene_space.pos_cuda,
-            scene_space.shs_cuda,
+            world_space.pos_cuda,
+            world_space.shs_cuda,
             nullptr,
-            scene_space.opacity_cuda,
-            scene_space.scale_cuda,
+            world_space.opacity_cuda,
+            world_space.scale_cuda,
             _scalingModifier,
-            scene_space.rot_cuda,
+            world_space.rot_cuda,
             nullptr,
             view_cuda,
             proj_cuda,
@@ -562,15 +581,17 @@ void sibr::GaussianView::onGUI()
 
     if (ImGui::Begin("Selection")) {
         const auto MemcpyBoxes = [&] {
-            CUDA_SAFE_CALL(cudaMemcpy(boxmin_cuda, boxmin.data()->data(), sizeof(float3) * boxmin.size(), cudaMemcpyHostToDevice));
-            CUDA_SAFE_CALL(cudaMemcpy(boxmax_cuda, boxmax.data()->data(), sizeof(float3) * boxmax.size(), cudaMemcpyHostToDevice));
+            CUDA_SAFE_CALL(cudaMemcpy(boxmin_cuda, boxmin.data(), sizeof(Vector3f) * boxmin.size(), cudaMemcpyHostToDevice));
+            CUDA_SAFE_CALL(cudaMemcpy(boxmax_cuda, boxmax.data(), sizeof(Vector3f) * boxmax.size(), cudaMemcpyHostToDevice));
         };
 
         const std::string selected_text = std::to_string(selected_box);
-        if (ImGui::Button("Add Box") && boxmin.size() < 16) {
+        if (ImGui::Button("Add Box")) {
             boxmin.emplace_back(_scenemin);
             boxmax.emplace_back(_scenemax);
             selected_box = boxmin.size() - 1;
+            cudaRealloc<float, Vector3f>(boxmin_cuda, boxmin.size());
+            cudaRealloc<float, Vector3f>(boxmax_cuda, boxmax.size());
             MemcpyBoxes();
         }
         ImGui::SameLine();
@@ -578,6 +599,8 @@ void sibr::GaussianView::onGUI()
             boxmin.erase(boxmin.begin() + selected_box);
             boxmax.erase(boxmax.begin() + selected_box);
             selected_box = std::min(static_cast<int>(boxmin.size() - 1), selected_box);
+            cudaRealloc<float, Vector3f, true>(boxmin_cuda, boxmin.size());
+            cudaRealloc<float, Vector3f, true>(boxmax_cuda, boxmax.size());
         }
         ImGui::SameLine();
         ImGui::Text("Active Boxes: %i/16", boxmin.size());
@@ -619,8 +642,9 @@ void sibr::GaussianView::onGUI()
 
             ImGui::PopItemWidth();
         }
-        if (slid)
+        if (slid) {
             MemcpyBoxes();
+        }
     }
     ImGui::End();
 
@@ -705,7 +729,7 @@ void sibr::GaussianView::onGUI()
         }
 
         ImGui::SliderInt("Subscene", &selected_scene, 0, scenes.size() - 1);
-        
+
         auto& s = scenes[selected_scene];
         ImGui::SliderFloat("Opacity", &s.opacity, 0, 1);
 

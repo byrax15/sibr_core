@@ -90,13 +90,19 @@ protected:
     int _sh_degree = 3;
 
     int count;
-    float* pos_cuda;
-    float* rot_cuda;
-    float* scale_cuda;
-    float* opacity_cuda;
-    float* shs_cuda;
-    int* rect_cuda;
+    struct GaussianProperties {
+        float* pos_cuda {};
+        float* rot_cuda {};
+        float* scale_cuda {};
+        float* opacity_cuda {};
+        float* shs_cuda {};
+
+        ~GaussianProperties();
+    };
+    GaussianProperties scene_space, world_space;
     float *boxmin_cuda, *boxmax_cuda;
+    int* rect_cuda;
+
 
     std::vector<Vector3f> boxmin, boxmax;
     int selected_box = 0;

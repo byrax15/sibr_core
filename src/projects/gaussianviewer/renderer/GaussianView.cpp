@@ -211,9 +211,16 @@ void cudaReallocMemcpy(CudaT*& buf_realloc, size_t old_count, std::vector<HostT>
 template <typename CudaT, typename HostT>
 static void cudaMallocMemcpy(CudaT*& buf, std::vector<HostT> const& data)
 {
-    cudaMalloc((void**)&buf, data.size() * sizeof(HostT));
+    cudaMalloc(&buf, data.size() * sizeof(HostT));
     cudaMemcpy(buf, data.data(), data.size() * sizeof(HostT), cudaMemcpyHostToDevice);
     CUDA_SAFE_CALL();
+}
+
+template <typename CudaT, typename HostT>
+static void cudaRealloc(CudaT*& buf, size_t count)
+{
+    cudaFree(buf);
+    cudaMalloc(&buf, count * sizeof(HostT));
 }
 
 static void glReallocGaussianData(sibr::GaussianData*& gData, size_t count,
@@ -299,6 +306,15 @@ private:
     GLuniform<int> _width = 1000;
     GLuniform<int> _height = 800;
 };
+
+sibr::GaussianView::GaussianProperties::~GaussianProperties()
+{
+    cudaFree(pos_cuda);
+    cudaFree(rot_cuda);
+    cudaFree(scale_cuda);
+    cudaFree(opacity_cuda);
+    cudaFree(shs_cuda);
+}
 }
 
 sibr::GaussianView::GaussianView(const sibr::BasicIBRScene::Ptr& ibrScene, uint render_w, uint render_h, const char* file, bool* messageRead, int sh_degree, bool white_bg, bool useInterop, int device)
@@ -356,11 +372,17 @@ sibr::GaussianView::GaussianView(const sibr::BasicIBRScene::Ptr& ibrScene, uint 
     scenes.emplace_back(GaussianScene { 0, static_cast<size_t>(P) });
 
     // Allocate and fill the GPU data
-    cudaMallocMemcpy(pos_cuda, pos);
-    cudaMallocMemcpy(rot_cuda, rot);
-    cudaMallocMemcpy(shs_cuda, shs);
-    cudaMallocMemcpy(opacity_cuda, opacity);
-    cudaMallocMemcpy(scale_cuda, scale);
+    cudaMallocMemcpy(scene_space.pos_cuda, pos);
+    cudaMallocMemcpy(scene_space.rot_cuda, rot);
+    cudaMallocMemcpy(scene_space.shs_cuda, shs);
+    cudaMallocMemcpy(scene_space.opacity_cuda, opacity);
+    cudaMallocMemcpy(scene_space.scale_cuda, scale);
+
+    cudaMalloc(&world_space.pos_cuda, count * sizeof(Pos));
+    cudaMalloc(&world_space.rot_cuda, count * sizeof(Rot));
+    cudaMalloc(&world_space.shs_cuda, count * sizeof(SHs<3>));
+    cudaMalloc(&world_space.opacity_cuda, count * sizeof(float));
+    cudaMalloc(&world_space.scale_cuda, count * sizeof(Scale));
 
     boxmin = { _scenemin };
     boxmax = { _scenemax };
@@ -466,13 +488,13 @@ void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camer
             count, _sh_degree, 16,
             background_cuda,
             _resolution.x(), _resolution.y(),
-            pos_cuda,
-            shs_cuda,
+            scene_space.pos_cuda,
+            scene_space.shs_cuda,
             nullptr,
-            opacity_cuda,
-            scale_cuda,
+            scene_space.opacity_cuda,
+            scene_space.scale_cuda,
             _scalingModifier,
-            rot_cuda,
+            scene_space.rot_cuda,
             nullptr,
             view_cuda,
             proj_cuda,
@@ -632,16 +654,23 @@ void sibr::GaussianView::onGUI()
                     scenes.emplace_back(GaussianScene {
                         static_cast<size_t>(count),
                         static_cast<size_t>(append_count) });
-                    cudaReallocMemcpy(pos_cuda, count, pos);
-                    cudaReallocMemcpy(rot_cuda, count, rot);
-                    cudaReallocMemcpy(opacity_cuda, count, opacity);
-                    cudaReallocMemcpy(shs_cuda, count, shs);
-                    cudaReallocMemcpy(scale_cuda, count, scale);
+                    cudaReallocMemcpy(scene_space.pos_cuda, count, pos);
+                    cudaReallocMemcpy(scene_space.rot_cuda, count, rot);
+                    cudaReallocMemcpy(scene_space.opacity_cuda, count, opacity);
+                    cudaReallocMemcpy(scene_space.shs_cuda, count, shs);
+                    cudaReallocMemcpy(scene_space.scale_cuda, count, scale);
                     _scenemin = std::min(min, _scenemin);
                     _scenemax = std::max(max, _scenemax);
                     count += append_count;
-                    glReallocGaussianData(gData, count,
-                        pos_cuda, rot_cuda, scale_cuda, opacity_cuda, shs_cuda);
+
+                    cudaRealloc<float, Pos>(world_space.pos_cuda, (count));
+                    cudaRealloc<float, Rot>(world_space.rot_cuda, (count));
+                    cudaRealloc<float, float>(world_space.opacity_cuda, (count));
+                    cudaRealloc<float, SHs<3>>(world_space.shs_cuda, (count));
+                    cudaRealloc<float, Scale>(world_space.scale_cuda, (count));
+
+                    // glReallocGaussianData(gData, count,
+                    //     pos_cuda, rot_cuda, scale_cuda, opacity_cuda, shs_cuda);
                 } else {
                     SIBR_LOG << "Skipping scene: no gaussian recognized in file\n";
                 }
@@ -651,13 +680,19 @@ void sibr::GaussianView::onGUI()
         ImGui::SameLine();
         if (ImGui::Button("Remove subscene") && scenes.size() > 1) {
             const auto& s = scenes[selected_scene];
-            s.EraseCompact<float, Pos>(pos_cuda, count);
-            s.EraseCompact<float, Rot>(rot_cuda, count);
-            s.EraseCompact<float, float>(opacity_cuda, count);
-            s.EraseCompact<float, SHs<3>>(shs_cuda, count);
-            s.EraseCompact<float, Scale>(scale_cuda, count);
+            s.EraseCompact<float, Pos>(scene_space.pos_cuda, count);
+            s.EraseCompact<float, Rot>(scene_space.rot_cuda, count);
+            s.EraseCompact<float, float>(scene_space.opacity_cuda, count);
+            s.EraseCompact<float, SHs<3>>(scene_space.shs_cuda, count);
+            s.EraseCompact<float, Scale>(scene_space.scale_cuda, count);
 
             count -= s.count;
+            cudaRealloc<float, Pos>(world_space.pos_cuda, (count));
+            cudaRealloc<float, Rot>(world_space.rot_cuda, (count));
+            cudaRealloc<float, float>(world_space.opacity_cuda, (count));
+            cudaRealloc<float, SHs<3>>(world_space.shs_cuda, (count));
+            cudaRealloc<float, Scale>(world_space.scale_cuda, (count));
+
             scenes.erase(std::next(scenes.begin(), selected_scene));
             scenes[0].start_index = 0;
             for (auto i = 1; i < scenes.size(); ++i) {
@@ -665,17 +700,14 @@ void sibr::GaussianView::onGUI()
             }
             selected_scene = selected_scene == scenes.size() ? selected_scene - 1 : selected_scene;
 
-            glReallocGaussianData(gData, count,
-                pos_cuda, rot_cuda, scale_cuda, opacity_cuda, shs_cuda);
+            // glReallocGaussianData(gData, count,
+            //     pos_cuda, rot_cuda, scale_cuda, opacity_cuda, shs_cuda);
         }
 
         ImGui::SliderInt("Subscene", &selected_scene, 0, scenes.size() - 1);
-        static float new_opacity = 1;
-        if (ImGui::SliderFloat("Opacity", &new_opacity, 0, 1)) {
-            auto& s = scenes[selected_scene];
-            const auto delta_op = s.SetOpacity(new_opacity);
-            s.for_each<float, float>(opacity_cuda, [delta_op](float& o) { o *= delta_op; });
-        }
+        
+        auto& s = scenes[selected_scene];
+        ImGui::SliderFloat("Opacity", &s.opacity, 0, 1);
 
         if (ImGui::Button("Save All...")) {
             std::string fname;
@@ -685,11 +717,11 @@ void sibr::GaussianView::onGUI()
                 std::vector<float> opacity(count);
                 std::vector<SHs<3>> shs(count);
                 std::vector<Scale> scale(count);
-                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(pos.data(), pos_cuda, sizeof(Pos) * count, cudaMemcpyDeviceToHost));
-                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(rot.data(), rot_cuda, sizeof(Rot) * count, cudaMemcpyDeviceToHost));
-                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(opacity.data(), opacity_cuda, sizeof(float) * count, cudaMemcpyDeviceToHost));
-                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(shs.data(), shs_cuda, sizeof(SHs<3>) * count, cudaMemcpyDeviceToHost));
-                CUDA_SAFE_CALL_ALWAYS(cudaMemcpy(scale.data(), scale_cuda, sizeof(Scale) * count, cudaMemcpyDeviceToHost));
+                CUDA_SAFE_CALL(cudaMemcpy(pos.data(), scene_space.pos_cuda, sizeof(Pos) * count, cudaMemcpyDeviceToHost));
+                CUDA_SAFE_CALL(cudaMemcpy(rot.data(), scene_space.rot_cuda, sizeof(Rot) * count, cudaMemcpyDeviceToHost));
+                CUDA_SAFE_CALL(cudaMemcpy(opacity.data(), scene_space.opacity_cuda, sizeof(float) * count, cudaMemcpyDeviceToHost));
+                CUDA_SAFE_CALL(cudaMemcpy(shs.data(), scene_space.shs_cuda, sizeof(SHs<3>) * count, cudaMemcpyDeviceToHost));
+                CUDA_SAFE_CALL(cudaMemcpy(scale.data(), scene_space.scale_cuda, sizeof(Scale) * count, cudaMemcpyDeviceToHost));
                 savePly(fname.c_str(), pos, shs, opacity, scale, rot, boxmin, boxmax, static_cast<FORWARD::Cull::Operator::Value>(selected_operation));
             }
         }
@@ -753,11 +785,6 @@ void sibr::GaussianView::onGUI()
 sibr::GaussianView::~GaussianView()
 {
     // Cleanup
-    cudaFree(pos_cuda);
-    cudaFree(rot_cuda);
-    cudaFree(scale_cuda);
-    cudaFree(opacity_cuda);
-    cudaFree(shs_cuda);
     cudaFree(boxmin_cuda);
     cudaFree(boxmax_cuda);
 

@@ -6,6 +6,7 @@
 namespace sibr {
 struct GaussianScene {
     size_t start_index {}, count {};
+    float opacity = 1;
 
     GaussianScene() = default;
 
@@ -15,21 +16,7 @@ struct GaussianScene {
     {
     }
 
-private:
-    float opacity = 1;
-
 public:
-    /**
-     * Set opacity member property.
-     * Returns the opacity change ratio in [0,2)
-     */
-    [[nodiscard]] auto SetOpacity(float op)
-    {
-        const auto delta = 1 + (op - opacity);
-        opacity = op;
-        return delta;
-    }
-
     template <typename CudaT, typename HostT, typename Callable>
     void for_each(CudaT* mapped_buffer, Callable&& c) const;
 
@@ -86,7 +73,7 @@ void sibr::GaussianScene::EraseCompact(CudaT*& mapped_buffer, size_t old_count) 
     CUDA_SAFE_CALL(cudaMalloc(&buf_new, ByteSize(old_count - count)));
     CUDA_SAFE_CALL(cudaMemcpy(buf_new, buf_old, ByteSize(start_index), cudaMemcpyDeviceToDevice));
     CUDA_SAFE_CALL(cudaMemcpy(buf_new + start_index, buf_old + end(), ByteSize(old_count - end()), cudaMemcpyDeviceToDevice));
-    
+
     cudaFree(buf_old);
     mapped_buffer = reinterpret_cast<CudaT*>(buf_new);
 }

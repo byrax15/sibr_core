@@ -712,6 +712,18 @@ void sibr::GaussianView::onGUI()
 
         auto& s = scenes[selected_scene];
         ImGui::DragFloat3("Position", &s.position.x, .1f);
+         static Vector3f euler {};
+         if (ImGui::DragFloat3("Rotation", euler.data())) {
+             const auto q
+                 = Eigen::AngleAxis(euler.x(), Vector3f::UnitX())
+                 * Eigen::AngleAxis(euler.y(), Vector3f::UnitY())
+                 * Eigen::AngleAxis(euler.z(), Vector3f::UnitZ());
+             s.rot.x = q.coeffs().x();
+             s.rot.y = q.coeffs().y();
+             s.rot.z = q.coeffs().z();
+             s.rot.w = q.coeffs().w();
+         }
+        ImGui::DragFloat3("Scale", &s.scale.x, .1f, -5.f, 5.f);
         ImGui::SliderFloat("Opacity", &s.opacity, 0, 1);
 
         if (ImGui::Button("Save All...")) {

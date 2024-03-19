@@ -312,15 +312,6 @@ private:
     GLuniform<int> _width = 1000;
     GLuniform<int> _height = 800;
 };
-
-sibr::GaussianView::GaussianProperties::~GaussianProperties()
-{
-    cudaFree(pos_cuda);
-    cudaFree(rot_cuda);
-    cudaFree(scale_cuda);
-    cudaFree(opacity_cuda);
-    cudaFree(shs_cuda);
-}
 }
 
 sibr::GaussianView::GaussianView(const sibr::BasicIBRScene::Ptr& ibrScene, uint render_w, uint render_h, const char* file, bool* messageRead, int sh_degree, bool white_bg, bool useInterop, int device)
@@ -487,23 +478,8 @@ void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camer
             image_cuda = fallbackBufferCuda;
         }
 
-        for (const auto& [start, count, position, opacity] : scenes) {
-            std::vector<Pos> positions(count);
-            cudaMemcpy(positions.data(), scene_space.pos_cuda, count * sizeof(Pos), cudaMemcpyDeviceToHost);
-            std::for_each(std::execution::par_unseq, positions.begin(), positions.end(), [position = position](Pos& p) { p += position; });
-            cudaMemcpy(world_space.pos_cuda, positions.data(), count * sizeof(Pos), cudaMemcpyHostToDevice);
-
-            std::vector<float> opacities(count);
-            cudaMemcpy(opacities.data(), scene_space.opacity_cuda, count * sizeof(float), cudaMemcpyDeviceToHost);
-            std::for_each(std::execution::par_unseq, opacities.begin(), opacities.end(), [opacity = opacity](float& op) { op *= opacity; });
-            cudaMemcpy(world_space.opacity_cuda, opacities.data(), count * sizeof(float), cudaMemcpyHostToDevice);
-
-            cudaMemcpy(world_space.rot_cuda, scene_space.rot_cuda, count * sizeof(Rot), cudaMemcpyDeviceToDevice);
-            cudaMemcpy(world_space.shs_cuda, scene_space.shs_cuda, count * sizeof(SHs<3>), cudaMemcpyDeviceToDevice);
-            cudaMemcpy(world_space.scale_cuda, scene_space.scale_cuda, count * sizeof(Scale), cudaMemcpyDeviceToDevice);
-        }
-
-        CUDA_SAFE_CALL();
+        CudaRasterizer::Rasterizer::sceneToWorldAsync(scene_space, world_space, scenes.data(), scenes.size());
+        auto& [pos_cuda, rot_cuda, scale_cuda, opacity_cuda, shs_cuda] = world_space;
         const auto num_rendered = CudaRasterizer::Rasterizer::forward(
             geomBufferFunc,
             binningBufferFunc,
@@ -511,13 +487,13 @@ void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camer
             count, _sh_degree, 16,
             background_cuda,
             _resolution.x(), _resolution.y(),
-            world_space.pos_cuda,
-            world_space.shs_cuda,
+            pos_cuda,
+            shs_cuda,
             nullptr,
-            world_space.opacity_cuda,
-            world_space.scale_cuda,
+            opacity_cuda,
+            scale_cuda,
             _scalingModifier,
-            world_space.rot_cuda,
+            rot_cuda,
             nullptr,
             view_cuda,
             proj_cuda,
@@ -735,7 +711,7 @@ void sibr::GaussianView::onGUI()
         ImGui::SliderInt("Subscene", &selected_scene, 0, scenes.size() - 1);
 
         auto& s = scenes[selected_scene];
-        ImGui::DragFloat3("Position", s.position.data());
+        ImGui::DragFloat3("Position", &s.position.x, .1f);
         ImGui::SliderFloat("Opacity", &s.opacity, 0, 1);
 
         if (ImGui::Button("Save All...")) {
@@ -835,4 +811,13 @@ sibr::GaussianView::~GaussianView()
     cudaFree(imgPtr);
 
     delete _copyRenderer;
+}
+
+CudaRasterizer::UniqueGaussianProperties::~UniqueGaussianProperties()
+{
+    cudaFree(pos_cuda);
+    cudaFree(rot_cuda);
+    cudaFree(scale_cuda);
+    cudaFree(opacity_cuda);
+    cudaFree(shs_cuda);
 }

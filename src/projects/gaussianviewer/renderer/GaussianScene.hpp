@@ -2,21 +2,13 @@
 
 #include "CUDA_SAFE_CALL_ALWAYS.h"
 #include "GaussianProperties.hpp"
+#include <rasterizer.h>
 #include <vector>
 
 namespace sibr {
-struct GaussianScene {
-    size_t start_index {}, count {};
-    Pos position;
-    float opacity = 1;
-
-    GaussianScene() = default;
-
-    GaussianScene(size_t start_index, size_t count)
-        : start_index(start_index)
-        , count(count)
-    {
-    }
+struct GaussianScene : CudaRasterizer::Rasterizer::GaussianScene {
+    using base =  CudaRasterizer::Rasterizer::GaussianScene;
+    using base::base;
 
 public:
     template <typename CudaT, typename HostT, typename Callable>

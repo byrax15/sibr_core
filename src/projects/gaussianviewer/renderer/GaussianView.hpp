@@ -11,8 +11,8 @@
 #pragma once
 
 #include "Config.hpp"
-#include "GaussianSurfaceRenderer.hpp"
 #include "GaussianScene.hpp"
+#include "GaussianSurfaceRenderer.hpp"
 #include <core/graphics/Mesh.hpp>
 #include <core/graphics/Texture.hpp>
 #include <core/renderer/CopyRenderer.hpp>
@@ -26,9 +26,12 @@
 #include <cuda_runtime.h>
 #include <functional>
 #include <memory>
+#include <rasterizer.h>
 
 namespace CudaRasterizer {
-class Rasterizer;
+struct UniqueGaussianProperties : CudaRasterizer::Rasterizer::GaussianProperties {
+    ~UniqueGaussianProperties();
+};
 }
 
 namespace sibr {
@@ -90,19 +93,9 @@ protected:
     int _sh_degree = 3;
 
     int count;
-    struct GaussianProperties {
-        float* pos_cuda {};
-        float* rot_cuda {};
-        float* scale_cuda {};
-        float* opacity_cuda {};
-        float* shs_cuda {};
-
-        ~GaussianProperties();
-    };
-    GaussianProperties scene_space, world_space;
+    CudaRasterizer::UniqueGaussianProperties scene_space, world_space;
     float *boxmin_cuda, *boxmax_cuda;
     int* rect_cuda;
-
 
     std::vector<Vector3f> boxmin, boxmax;
     int selected_box = 0;

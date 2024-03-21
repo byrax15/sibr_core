@@ -336,7 +336,6 @@ sibr::GaussianView::GaussianView(const sibr::BasicIBRScene::Ptr& ibrScene, uint 
         SIBR_ERR << "Sorry, need at least compute capability 7.0+!";
     }
 
-    _pointbasedrenderer.reset(new PointBasedRenderer());
     _copyRenderer = new BufferCopyRenderer();
     _copyRenderer->flip() = true;
     _copyRenderer->width() = render_w;
@@ -397,12 +396,6 @@ sibr::GaussianView::GaussianView(const sibr::BasicIBRScene::Ptr& ibrScene, uint 
     CUDA_SAFE_CALL(cudaMalloc((void**)&background_cuda, 3 * sizeof(float)));
     CUDA_SAFE_CALL(cudaMemcpy(background_cuda, bg.data(), sizeof(Vector3f), cudaMemcpyHostToDevice));
 
-    gData = new GaussianData(P,
-        (float*)pos.data(),
-        (float*)rot.data(),
-        (float*)scale.data(),
-        opacity.data(),
-        (float*)shs.data());
     _gaussianRenderer = new GaussianSurfaceRenderer();
 
     // Create GL buffer ready for CUDA/GL interop
@@ -442,93 +435,88 @@ void sibr::GaussianView::setScene(const sibr::BasicIBRScene::Ptr& newScene)
     _scene->cameras()->debugFlagCameraAsUsed(imgs_ulr);
 }
 
-sibr::Camera const* last_cam;
 void sibr::GaussianView::onRenderIBR(sibr::IRenderTarget& dst, const sibr::Camera& eye)
 {
-    last_cam = &eye;
-    if (currMode == "Ellipsoids") {
-        _gaussianRenderer->process(count, *gData, eye, dst, 0.2f);
-    } else if (currMode == "Initial Points") {
-        _pointbasedrenderer->process(_scene->proxies()->proxy(), eye, dst);
+    last_view = eye.view();
+    last_proj = eye.proj();
+
+    // Convert view and projection to target coordinate system
+    auto view_mat = eye.view();
+    view_mat.row(1) *= -1;
+    view_mat.row(2) *= -1;
+
+    auto proj_mat = eye.viewproj();
+    proj_mat.row(1) *= -1;
+
+    // Compute additional view parameters
+    float tan_fovy = tan(eye.fovy() * 0.5f);
+    float tan_fovx = tan_fovy * eye.aspect();
+
+    // Copy frame-dependent data to GPU
+    CUDA_SAFE_CALL(cudaMemcpy(view_cuda, view_mat.data(), sizeof(sibr::Matrix4f), cudaMemcpyHostToDevice));
+    CUDA_SAFE_CALL(cudaMemcpy(proj_cuda, proj_mat.data(), sizeof(sibr::Matrix4f), cudaMemcpyHostToDevice));
+    CUDA_SAFE_CALL(cudaMemcpy(cam_pos_cuda, &eye.position(), sizeof(float) * 3, cudaMemcpyHostToDevice));
+
+    float* image_cuda = nullptr;
+    if (!_interop_failed) {
+        // Map OpenGL buffer resource for use with CUDA
+        size_t bytes;
+        CUDA_SAFE_CALL(cudaGraphicsMapResources(1, &imageBufferCuda));
+        CUDA_SAFE_CALL(cudaGraphicsResourceGetMappedPointer((void**)&image_cuda, &bytes, imageBufferCuda));
     } else {
-        // Convert view and projection to target coordinate system
-        auto view_mat = eye.view();
-        view_mat.row(1) *= -1;
-        view_mat.row(2) *= -1;
+        image_cuda = fallbackBufferCuda;
+    }
 
-        auto proj_mat = eye.viewproj();
-        proj_mat.row(1) *= -1;
+    CudaRasterizer::Rasterizer::sceneToWorldAsync(scene_space, world_space, scenes.data(), scenes.size());
+    auto& [pos_cuda, rot_cuda, scale_cuda, opacity_cuda, shs_cuda] = world_space;
+    const auto num_rendered = CudaRasterizer::Rasterizer::forward(
+        geomBufferFunc,
+        binningBufferFunc,
+        imgBufferFunc,
+        count, _sh_degree, 16,
+        background_cuda,
+        _resolution.x(), _resolution.y(),
+        pos_cuda,
+        shs_cuda,
+        nullptr,
+        opacity_cuda,
+        scale_cuda,
+        _scalingModifier,
+        rot_cuda,
+        nullptr,
+        view_cuda,
+        proj_cuda,
+        cam_pos_cuda,
+        tan_fovx,
+        tan_fovy,
+        false,
+        image_cuda,
+        nullptr,
+        rect_cuda,
+        boxmin.size(),
+        boxmin_cuda,
+        boxmax_cuda,
+        static_cast<FORWARD::Cull::Operator::Value>(selected_operation));
 
-        // Compute additional view parameters
-        float tan_fovy = tan(eye.fovy() * 0.5f);
-        float tan_fovx = tan_fovy * eye.aspect();
+    if (!_interop_failed) {
+        // Unmap OpenGL resource for use with OpenGL
+        CUDA_SAFE_CALL(cudaGraphicsUnmapResources(1, &imageBufferCuda));
+    } else {
+        CUDA_SAFE_CALL(cudaMemcpy(fallback_bytes.data(), fallbackBufferCuda, fallback_bytes.size(), cudaMemcpyDeviceToHost));
+        glNamedBufferSubData(imageBuffer, 0, fallback_bytes.size(), fallback_bytes.data());
+    }
 
-        // Copy frame-dependent data to GPU
-        CUDA_SAFE_CALL(cudaMemcpy(view_cuda, view_mat.data(), sizeof(sibr::Matrix4f), cudaMemcpyHostToDevice));
-        CUDA_SAFE_CALL(cudaMemcpy(proj_cuda, proj_mat.data(), sizeof(sibr::Matrix4f), cudaMemcpyHostToDevice));
-        CUDA_SAFE_CALL(cudaMemcpy(cam_pos_cuda, &eye.position(), sizeof(float) * 3, cudaMemcpyHostToDevice));
-
-        float* image_cuda = nullptr;
-        if (!_interop_failed) {
-            // Map OpenGL buffer resource for use with CUDA
-            size_t bytes;
-            CUDA_SAFE_CALL(cudaGraphicsMapResources(1, &imageBufferCuda));
-            CUDA_SAFE_CALL(cudaGraphicsResourceGetMappedPointer((void**)&image_cuda, &bytes, imageBufferCuda));
-        } else {
-            image_cuda = fallbackBufferCuda;
-        }
-
-        CudaRasterizer::Rasterizer::sceneToWorldAsync(scene_space, world_space, scenes.data(), scenes.size());
-        auto& [pos_cuda, rot_cuda, scale_cuda, opacity_cuda, shs_cuda] = world_space;
-        const auto num_rendered = CudaRasterizer::Rasterizer::forward(
-            geomBufferFunc,
-            binningBufferFunc,
-            imgBufferFunc,
-            count, _sh_degree, 16,
-            background_cuda,
-            _resolution.x(), _resolution.y(),
-            pos_cuda,
-            shs_cuda,
-            nullptr,
-            opacity_cuda,
-            scale_cuda,
-            _scalingModifier,
-            rot_cuda,
-            nullptr,
-            view_cuda,
-            proj_cuda,
-            cam_pos_cuda,
-            tan_fovx,
-            tan_fovy,
-            false,
-            image_cuda,
-            nullptr,
-            rect_cuda,
-            boxmin.size(),
-            boxmin_cuda,
-            boxmax_cuda,
-            static_cast<FORWARD::Cull::Operator::Value>(selected_operation));
-
-        if (!_interop_failed) {
-            // Unmap OpenGL resource for use with OpenGL
-            CUDA_SAFE_CALL(cudaGraphicsUnmapResources(1, &imageBufferCuda));
-        } else {
-            CUDA_SAFE_CALL(cudaMemcpy(fallback_bytes.data(), fallbackBufferCuda, fallback_bytes.size(), cudaMemcpyDeviceToHost));
-            glNamedBufferSubData(imageBuffer, 0, fallback_bytes.size(), fallback_bytes.data());
-        }
-
-        /*
-         * NECESSARY because the forward(...) returns without drawing if all gaussians were culled,
-         * leaving a smear of gaussians in the framebuffer which lasted until at least one gaussian
-         * remains after culling.
-         */
-        if (num_rendered <= 0) {
-            dst.clear();
-            return;
-        } else {
-            // Copy image contents to framebuffer
-            _copyRenderer->process(imageBuffer, dst, _resolution.x(), _resolution.y());
-        }
+    /*
+     * NECESSARY because the forward(...) returns without drawing if all gaussians were culled,
+     * leaving a smear of gaussians in the framebuffer which lasted until at least one gaussian
+     * remains after culling.
+     */
+    if (num_rendered <= 0) {
+        dst.clear();
+        return;
+    } else {
+        // Copy image contents to framebuffer
+        _copyRenderer->process(imageBuffer, dst, _resolution.x(), _resolution.y());
     }
 
     if (cudaPeekAtLastError() != cudaSuccess) {
@@ -542,23 +530,6 @@ void sibr::GaussianView::onUpdate(Input& input)
 
 void sibr::GaussianView::onGUI()
 {
-    // Generate and update UI elements
-    if (ImGui::Begin("Render")) {
-        if (ImGui::BeginCombo("Render Mode", currMode.c_str())) {
-            if (ImGui::Selectable("Splats"))
-                currMode = "Splats";
-            if (ImGui::Selectable("Initial Points"))
-                currMode = "Initial Points";
-            if (ImGui::Selectable("Ellipsoids"))
-                currMode = "Ellipsoids";
-            ImGui::EndCombo();
-        }
-        if (currMode == "Splats") {
-            ImGui::SliderFloat("Scaling Modifier", &_scalingModifier, 0.001f, 1.0f);
-        }
-    }
-    ImGui::End();
-
     if (ImGui::Begin("Selection")) {
         const auto MemcpyBoxes = [&] {
             CUDA_SAFE_CALL(cudaMemcpy(boxmin_cuda, boxmin.data(), sizeof(Vector3f) * boxmin.size(), cudaMemcpyHostToDevice));
@@ -712,17 +683,7 @@ void sibr::GaussianView::onGUI()
 
         auto& s = scenes[selected_scene];
         ImGui::DragFloat3("Position", &s.position.x, .1f);
-         static Vector3f euler {};
-         if (ImGui::DragFloat3("Rotation", euler.data())) {
-             const auto q
-                 = Eigen::AngleAxis(euler.x(), Vector3f::UnitX())
-                 * Eigen::AngleAxis(euler.y(), Vector3f::UnitY())
-                 * Eigen::AngleAxis(euler.z(), Vector3f::UnitZ());
-             s.rot.x = q.coeffs().x();
-             s.rot.y = q.coeffs().y();
-             s.rot.z = q.coeffs().z();
-             s.rot.w = q.coeffs().w();
-         }
+        ImGui::DragFloat3("Rotation", &s.rot.x);
         ImGui::DragFloat3("Scale", &s.scale.x, .1f, -5.f, 5.f);
         ImGui::SliderFloat("Opacity", &s.opacity, 0, 1);
 
@@ -763,10 +724,7 @@ void sibr::GaussianView::onGUI()
             ImGuizmo::RecomposeMatrixFromComponents(transl.data(), rot.data(), scale.data(), box_mats[i].data());
         }
 
-        ImGuizmo::DrawCubes(
-            last_cam->view().data(), last_cam->proj().data(),
-            box_mats[0].data(), box_mats.size(),
-            ImGuizmo::DrawMode::EDGES);
+        ImGuizmo::DrawCubes(last_view.data(), last_proj.data(), box_mats[0].data(), box_mats.size(), ImGuizmo::DrawMode::EDGES);
     }
     ImGui::End();
 

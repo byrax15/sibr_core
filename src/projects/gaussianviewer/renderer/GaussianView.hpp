@@ -110,13 +110,13 @@ protected:
     void *geomPtr = nullptr, *binningPtr = nullptr, *imgPtr = nullptr;
     std::function<char*(size_t N)> geomBufferFunc, binningBufferFunc, imgBufferFunc;
 
+    Matrix4f last_view, last_proj;
     float* view_cuda;
     float* proj_cuda;
     float* cam_pos_cuda;
     float* background_cuda;
 
     float _scalingModifier = 1.0f;
-    GaussianData* gData;
 
     bool _interop_failed = false;
     std::vector<char> fallback_bytes;
@@ -124,7 +124,6 @@ protected:
     bool accepted = false;
 
     std::shared_ptr<sibr::BasicIBRScene> _scene; ///< The current scene.
-    PointBasedRenderer::Ptr _pointbasedrenderer;
     BufferCopyRenderer* _copyRenderer;
     GaussianSurfaceRenderer* _gaussianRenderer;
 };
